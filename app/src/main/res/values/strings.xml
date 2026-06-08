@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Viewshed Calculator</string>
+    <string name="calculate_viewshed">Calculate Viewshed</string>
+    <string name="observer_height">Observer Height (m)</string>
+    <string name="max_distance">Max Distance (km)</string>
+    <string name="num_rays">Number of Rays</string>
+    <string name="sample_steps">Samples per Ray</string>
+    <string name="use_demo_terrain">Use Demo Terrain (Offline)</string>
+    <string name="include_curvature">Include Earth Curvature + Refraction</string>
+    <string name="refraction_coeff">Refraction Coefficient (default 0.13)</string>
+    <string name="long_press_hint">Long press on map to place observer</string>
+    <string name="visible_area">Visible Area</string>
+    <string name="export_geojson">Export Visible GeoJSON</string>
+    <string name="clear">Clear</string>
+    <string name="settings">Settings</string>
+</resources>
