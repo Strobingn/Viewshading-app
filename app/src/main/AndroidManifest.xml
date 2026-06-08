@@ -17,14 +17,10 @@
         android:theme="@style/Theme.ViewshedApp"
         tools:targetApi="31">
 
-        <!--
-        TODO: Get your Google Maps API key from https://console.cloud.google.com/
-        Enable "Maps SDK for Android" and "Elevation API".
-        Replace YOUR_API_KEY_HERE with your key.
-        -->
+        <!-- Google Maps + Elevation API key -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="YOUR_API_KEY_HERE" />
+            android:value="AIzaSyBMcfVOJXvTPE1CiT4gcnTRPDppNzOr-n4" />
 
         <activity
             android:name=".MainActivity"

@@ -307,11 +307,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private suspend fun getGoogleElevation(target: LatLng): Double {
         return withContext(Dispatchers.IO) {
             try {
-                // Note: For production, batch multiple points or use your backend.
-                // Free tier has limits. For many samples, implement batching or caching.
                 val response = elevationService.getElevation(
                     locations = "${target.latitude},${target.longitude}",
-                    key = "YOUR_API_KEY_HERE"  // Same key or separate Elevation key
+                    key = "AIzaSyBMcfVOJXvTPE1CiT4gcnTRPDppNzOr-n4"
                 )
                 if (response.status == "OK" && response.results.isNotEmpty()) {
                     response.results[0].elevation
@@ -343,7 +341,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         visiblePolygon = map.addPolygon(polygonOptions)
 
-        // Optional: Add center marker again or info
         observerMarker?.snippet = "Viewshed calculated | Visible area shown in green"
     }
 
@@ -360,7 +357,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun exportGeoJson() {
         visiblePolygon?.let { poly ->
             val points = poly.points
-            // Simple GeoJSON Polygon
             val geoJson = buildString {
                 append("{\n  \"type\": \"FeatureCollection\",\n  \"features\": [{\n")
                 append("    \"type\": \"Feature\",\n")
@@ -380,18 +376,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 append("  } ]\n}")
             }
 
-            // For real app: Use Intent to share or save to Downloads
-            // Here: Log + Toast with first 200 chars
             Log.d("GeoJSON", geoJson)
             Toast.makeText(this, "GeoJSON logged to Logcat. Copy from there or implement file save/share.", Toast.LENGTH_LONG).show()
-
-            // TODO: Implement proper share via Intent.createChooser with text/plain
         } ?: run {
             Toast.makeText(this, "No visible polygon to export.", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Retrofit interface for Elevation API
     interface ElevationService {
         @GET("elevation/json")
         suspend fun getElevation(
