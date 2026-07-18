@@ -1,5 +1,3 @@
-import com.google.android.libraries.mapsplatform.secrets_gradle_plugin.secrets
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,7 +17,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
-        buildConfigField("String", "MAPS_API_KEY", secrets.getProperty("MAPS_API_KEY"))
+        val secretsProperties = com.google.android.libraries.mapsplatform.secrets_gradle_plugin.SecretsPropertiesProvider.getSecretsProperties()
+        buildConfigField("String", "MAPS_API_KEY", secretsProperties.getProperty("MAPS_API_KEY"))
     }
 
     buildTypes {
@@ -53,7 +52,6 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
-    implementation("com.google.android.libraries.mapsplatform.secrets-gradle-plugin:secrets-gradle-plugin:2.0.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
