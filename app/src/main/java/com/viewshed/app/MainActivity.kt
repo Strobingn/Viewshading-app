@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Bundle
 import android.util.Log
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -119,7 +120,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     override fun onMapReady(googleMap: GoogleMap) {
         map = googleMap
-        map.mapType = GoogleMap.MAP_TYPE_HYBRID // Terrain + satellite good for viewshed
+        map.mapType = GoogleMap.MAP_TYPE_HYBRID
         map.uiSettings.isZoomControlsEnabled = true
         map.uiSettings.isMyLocationButtonEnabled = true
 
@@ -138,15 +139,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             ))
         }
 
-        // Default to Newburgh NY area (user location)
+        // Default to Newburgh NY area
         moveToDefaultLocation()
     }
 
     private fun moveToDefaultLocation() {
-        val newburgh = LatLng(41.499, -74.010) // Newburgh / Cornwall area
+        val newburgh = LatLng(41.499, -74.010)
         map.moveCamera(CameraUpdateFactory.newLatLngZoom(newburgh, 12f))
-        // Optional: Auto place observer at center for quick start
-        // placeObserver(newburgh)
     }
 
     private fun enableMyLocation() {
@@ -182,6 +181,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             try {
                 binding.btnCalculate.isEnabled = false
                 binding.btnCalculate.text = "Calculating..."
+                binding.progressBar.visibility = View.VISIBLE
 
                 val height = binding.etObserverHeight.text.toString().toDoubleOrNull() ?: 1.7
                 val maxDistKm = binding.etMaxDistance.text.toString().toDoubleOrNull() ?: 5.0
@@ -193,6 +193,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                 val visibleBoundary = mutableListOf<LatLng>()
 
+                // Get observer elevation once
+                val observerElev = if (useDemo) {
+                    getDemoElevation(observer.latitude, observer.longitude)
+                } else {
+                    getGoogleElevation(observer)
+                }
+
                 // Radial ray marching
                 for (i in 0 until numRays) {
                     val bearing = (i * 360.0 / numRays)
@@ -200,17 +207,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     var blocked = false
 
                     for (s in 1..samples) {
-                        val distM = (s * (maxDistKm * 1000) / samples)
+                        val distM = (s * (maxDistKm * 1000) / samples).toDouble()
                         val target = computeDestinationPoint(observer, bearing, distM)
 
                         val terrainElev = if (useDemo) {
                             getDemoElevation(target.latitude, target.longitude)
                         } else {
-                            getGoogleElevation(target) // Real API call
+                            getGoogleElevation(target)
                         }
 
                         val losHeight = computeLineOfSightHeight(
-                            observerElev = getDemoElevation(observer.latitude, observer.longitude) + height,
+                            observerElev = observerElev + height,
                             distM = distM,
                             useCurvature = useCurvature,
                             refractionCoeff = refraction
@@ -247,14 +254,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             } finally {
                 binding.btnCalculate.isEnabled = true
                 binding.btnCalculate.text = getString(R.string.calculate_viewshed)
-                binding.btnExport.isEnabled = true
+                binding.progressBar.visibility = View.GONE
+                binding.btnExport.isEnabled = visibleBoundary.isNotEmpty()
             }
         }
     }
 
-    // Haversine destination point calculation (accurate enough)
+    // Haversine destination point calculation
     private fun computeDestinationPoint(start: LatLng, bearingDeg: Double, distanceM: Double): LatLng {
-        val R = 6371000.0 // Earth radius m
+        val R = 6371000.0
         val d = distanceM / R
         val bearing = Math.toRadians(bearingDeg)
 
@@ -276,46 +284,54 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     ): Double {
         if (!useCurvature) return observerElev
 
-        // Earth curvature drop (approx)
+        // Earth curvature drop
         val curvatureDrop = (distM * distM) / (2 * 6371000.0)
 
-        // Refraction correction (standard ~0.13 reduces curvature effect)
+        // Refraction correction
         val refractionCorrection = refractionCoeff * curvatureDrop
 
         return observerElev - curvatureDrop + refractionCorrection
     }
 
-    // DEMO terrain generator - realistic-ish hills around Newburgh/Hudson
+    // DEMO terrain generator - deterministic hills around Newburgh/Hudson
     private fun getDemoElevation(lat: Double, lon: Double): Double {
-        // Newburgh area base ~ 0-50m, with hills
         val base = 20.0
         val latRad = Math.toRadians(lat)
         val lonRad = Math.toRadians(lon)
 
-        // Simple multi-frequency hills (like real terrain)
+        // Multi-frequency hills
         val hill1 = 80 * sin(latRad * 50) * cos(lonRad * 40)
         val hill2 = 40 * sin(latRad * 120 + 1.3) * cos(lonRad * 90)
         val hill3 = 25 * sin(latRad * 300) * cos(lonRad * 250)
 
-        // River valley effect (lower near Hudson ~ -74 lon)
+        // River valley effect
         val riverEffect = if (lon < -73.95) -15.0 else 0.0
 
-        return base + hill1 + hill2 + hill3 + riverEffect + Random((lat*1000 + lon*1000).toLong()).nextDouble() * 5
+        // Deterministic noise based on coordinates
+        val noise = coordHash(lat, lon) * 5
+
+        return base + hill1 + hill2 + hill3 + riverEffect + noise
     }
 
-    // Real Google Elevation API call (one point)
+    // Deterministic coordinate hash for consistent noise
+    private fun coordHash(lat: Double, lon: Double): Double {
+        val h = (lat * 100000 + lon * 100000).toLong()
+        return (h % 100) / 100.0
+    }
+
+    // Real Google Elevation API call
     private suspend fun getGoogleElevation(target: LatLng): Double {
         return withContext(Dispatchers.IO) {
             try {
                 val response = elevationService.getElevation(
                     locations = "${target.latitude},${target.longitude}",
-                    key = "AIzaSyBMcfVOJXvTPE1CiT4gcnTRPDppNzOr-n4"
+                    key = BuildConfig.MAPS_API_KEY
                 )
                 if (response.status == "OK" && response.results.isNotEmpty()) {
                     response.results[0].elevation
                 } else {
                     Log.w("Elevation", "API error: ${response.status}")
-                    getDemoElevation(target.latitude, target.longitude) // Fallback
+                    getDemoElevation(target.latitude, target.longitude)
                 }
             } catch (e: Exception) {
                 Log.e("Elevation", "API call failed", e)
@@ -334,7 +350,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val polygonOptions = PolygonOptions()
             .addAll(boundary)
-            .fillColor(0x4D00FF00) // Semi-transparent green
+            .fillColor(0x4D00FF00)
             .strokeColor(0xFF00AA00)
             .strokeWidth(3f)
             .geodesic(true)
@@ -358,22 +374,40 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         visiblePolygon?.let { poly ->
             val points = poly.points
             val geoJson = buildString {
-                append("{\n  \"type\": \"FeatureCollection\",\n  \"features\": [{\n")
-                append("    \"type\": \"Feature\",\n")
-                append("    \"geometry\": {\n")
-                append("      \"type\": \"Polygon\",\n")
-                append("      \"coordinates\": [[")
+                append("{
+")
+                append("  "type": "FeatureCollection",
+")
+                append("  "features": [{
+")
+                append("    "type": "Feature",
+")
+                append("    "geometry": {
+")
+                append("      "type": "Polygon",
+")
+                append("      "coordinates": [[")
                 points.forEachIndexed { idx, p ->
                     append("[${p.longitude}, ${p.latitude}]")
                     if (idx < points.size - 1) append(",")
                 }
-                append("]]\n    },\n")
-                append("    \"properties\": {\n")
-                append("      \"observer_lat\": ${observerLatLng?.latitude},\n")
-                append("      \"observer_lon\": ${observerLatLng?.longitude},\n")
-                append("      \"description\": \"Viewshed visible area from Android app\"\n")
-                append("    }\n")
-                append("  } ]\n}")
+                append("]]
+")
+                append("    },
+")
+                append("    "properties": {
+")
+                append("      "observer_lat": ${observerLatLng?.latitude},
+")
+                append("      "observer_lon": ${observerLatLng?.longitude},
+")
+                append("      "description": "Viewshed visible area from Android app"
+")
+                append("    }
+")
+                append("  }]
+")
+                append("}")
             }
 
             Log.d("GeoJSON", geoJson)
@@ -398,7 +432,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     data class ElevationResult(
         val elevation: Double,
-        val location: LatLng? = null,
+        val location: com.google.android.gms.maps.model.LatLng? = null,
         val resolution: Double? = null
     )
 }
