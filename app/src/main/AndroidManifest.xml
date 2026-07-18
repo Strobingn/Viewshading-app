@@ -17,10 +17,9 @@
         android:theme="@style/Theme.ViewshedApp"
         tools:targetApi="31">
 
-        <!-- Google Maps + Elevation API key -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyBMcfVOJXvTPE1CiT4gcnTRPDppNzOr-n4" />
+            android:value="${MAPS_API_KEY}" />
 
         <activity
             android:name=".MainActivity"
