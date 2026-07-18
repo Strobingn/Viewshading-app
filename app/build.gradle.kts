@@ -17,7 +17,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
-        buildConfigField("String", "MAPS_API_KEY", secrets["MAPS_API_KEY"])
+        val localProperties = Properties().apply {
+            file("secrets.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+        }
+        buildConfigField("String", "MAPS_API_KEY", localProperties.getProperty("MAPS_API_KEY") ?: "")
     }
 
     buildTypes {
