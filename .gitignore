@@ -1,0 +1,16 @@
+# API Keys
+secrets.properties
+local.properties
+
+# Android
+*.iml
+.idea/
+gradle/
+build/
+
+# Keystores
+*.jks
+*.keystore
+
+# Environment
+.env
