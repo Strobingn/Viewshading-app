@@ -17,7 +17,9 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
-        buildConfigField("String", "MAPS_API_KEY", project.findProperty("MAPS_API_KEY")?.toString() ?: "")
+        // Access secrets through the plugin extension
+        val secrets = com.google.android.libraries.mapsplatform.secrets_gradle_plugin.secrets
+        buildConfigField("String", "MAPS_API_KEY", secrets["MAPS_API_KEY"])
     }
 
     buildTypes {
