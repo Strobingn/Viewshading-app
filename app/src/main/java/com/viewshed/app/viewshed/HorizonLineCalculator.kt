@@ -1,10 +1,23 @@
 package com.viewshed.app.viewshed
 
-// Horizon line calculation for visual horizon display
+/**
+ * Calculates horizon line points for visual display on map.
+ * Reuses ViewshedEngine logic for accuracy.
+ */
 object HorizonLineCalculator {
-    fun calculateHorizonLine(observer: GeoPoint, rays: Int = 360, maxDistanceM: Double = 20000.0): List<GeoPoint> {
-        // For each bearing, find farthest visible point (reuse ViewshedEngine logic)
-        // Return list of horizon points for drawing as polyline on map
-        return emptyList() // Scaffold - implement using existing engine
+
+    suspend fun calculateHorizonLine(
+        observer: GeoPoint,
+        rays: Int = 360,
+        maxDistanceM: Double = 20000.0
+    ): List<GeoPoint> {
+        val result = ViewshedEngine.computeViewshed(
+            observer = observer,
+            maxDistanceM = maxDistanceM,
+            quality = ViewshedEngine.Quality.MED,
+            useAdaptiveSampling = true
+        )
+        // Take the outer visible points as horizon approximation
+        return result.visiblePoints.take(rays)
     }
 }
