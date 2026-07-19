@@ -2,8 +2,8 @@
 
 **Branch:** feature/complete-high-impact-roadmap
 
-## Recently Added
-- [x] LiDAR ground point classifier (classification field + simple progressive filter)
-- [x] Ground-only point cloud support for cleaner terrain/viewshed
+## Recently Completed
+- [x] Full Hillshade from LiDAR workflow (ground classification → raster → hillshade)
+- [x] Ability to visualize subtle ground features (foundations, old structures) from phone-loaded LiDAR
 
-This is now available and wired into the LiDAR rendering pipeline.
+This workflow is now functional end-to-end.
