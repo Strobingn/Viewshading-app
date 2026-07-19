@@ -1,39 +1,37 @@
-# Vulkan Compute Pipeline Integration for Viewshed (Sir)
+# Vulkan Compute Shaders for Viewshed Ray Sampling - Deep Exploration (Sir)
 
-## Overview
-The slope/atan hot path in ray sampling can be offloaded to Vulkan Compute for 10-100x speedup on high ray counts.
+## Why Vulkan Compute for this workload?
+The per-sample slope = atan((h - observerH) / d) + max-slope reduction is embarrassingly parallel across thousands of samples.
+Mobile GPUs (Adreno 7xx / Mali-G7xx) excel at this when memory access is coalesced and we minimize atomics.
 
-## Files Added
-- viewshed_compute.glsl (compute shader)
-- ViewshedEngine.vulkanComputeViewshed() stub
+## Advanced Shader Features Used
+- Subgroup arithmetic (GL_KHR_shader_subgroup_arithmetic) for fast max reduction inside warp/wave without atomics.
+- SOA (Structure of Arrays) layout for coalesced global memory reads.
+- Shared memory + barrier for workgroup reduction.
+- local_size_x = 64 tuned for common mobile subgroup size.
 
-## Full Integration Steps (Android 2026)
+## Recommended Dispatch Strategy
+Dispatch as 2D: x = samplesPerRay, y = numRays
+One workgroup per ray or per tile of rays.
 
-1. **Gradle / Native**
-   - Enable NDK in app/build.gradle.kts
-   - Add cmake or ndkBuild
-   - Depend on Vulkan via `implementation 'androidx.vulkan:vulkan:1.3.+'` or direct NDK
+## Full Host-Side Steps (more detail)
+1. Compile shader to SPIR-V with glslc --target-env=vulkan1.3
+2. Create VkShaderModule
+3. Descriptor set layout with 4 storage buffers + uniform buffer for params
+4. Pipeline with VK_PIPELINE_BIND_POINT_COMPUTE
+5. Command buffer: bind pipeline, bind descriptors, vkCmdDispatch(numRays, 1, 1) or 2D
+6. Memory barrier + vkCmdCopyBuffer to read back visible horizons
 
-2. **Native C++ (jni/)**
-   - Create Vulkan instance, physical device, queue with compute support
-   - Load SPIR-V from viewshed_compute.glsl (compile with glslc)
-   - Create compute pipeline, descriptor sets, buffers
-   - Map Kotlin GeoPoint arrays to VkBuffer
-   - Dispatch with vkCmdDispatch
-   - Read back visible points
+## Mobile Gotchas
+- Tile-based GPUs love small working sets. Keep samplesPerRay * numRays under ~8k-16k for good cache behavior.
+- Prefer subgroup ops over atomics when possible.
+- Use push constants for observerHeight instead of uniform buffer when possible.
 
-3. **JNI Bridge**
-   Example:
-   extern "C" JNIEXPORT jobjectArray JNICALL
-   Java_com_viewshed_app_viewshed_ViewshedEngine_nativeVulkanCompute(...)
+## Next Level
+- Multi-pass: first pass finds per-ray max slope, second pass collects visible points.
+- Bindless or indirect dispatch for variable ray counts.
+- Combine with async compute queue to overlap with graphics (map rendering).
 
-4. **Shader Compilation**
-   glslc viewshed_compute.glsl -o viewshed_compute.spv
+Current simple shader is good starting point. Advanced version (viewshed_compute_advanced.glsl) demonstrates subgroup + shared memory reduction.
 
-5. **Fallback**
-   Engine already falls back to highly optimized adaptive CPU path if Vulkan not available or init fails.
-
-## Performance Target
-- 72 rays x 40 samples = ~3k points -> sub 50ms on modern Adreno/Mali with Vulkan compute.
-
-Contact Sir for full native implementation or handoff to native dev.
+Ready for full native C++ implementation when needed, Sir.
