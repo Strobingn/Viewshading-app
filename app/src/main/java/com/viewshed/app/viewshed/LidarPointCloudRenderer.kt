@@ -1,37 +1,55 @@
 package com.viewshed.app.viewshed
 
 /**
- * Full LiDAR Point Cloud Rendering Implementation
- *
- * Supports:
- * - Aggressive LOD downsampling
- * - Vulkan or OpenGL ES point rendering
- * - Color by elevation or intensity
- * - Integration with viewshed (only render visible points)
+ * LiDAR Point Cloud Rendering with proper filtering.
+ * Filters points to only those visible according to current viewshed.
  */
 object LidarPointCloudRenderer {
 
-    data class LidarPoint(val lat: Double, val lon: Double, val elevation: Double, val intensity: Float = 0f)
-
-    fun loadAndDownsample(filePath: String, center: GeoPoint, zoom: Float): List<LidarPoint> {
-        // TODO: Parse LAS/LAZ
-        // Downsample based on zoom
-        val targetPoints = when {
-            zoom > 17 -> 80000
-            zoom > 14 -> 30000
-            else -> 8000
-        }
-        return emptyList() // Replace with real loader
-    }
+    data class LidarPoint(
+        val lat: Double,
+        val lon: Double,
+        val elevation: Double,
+        val intensity: Float = 0f
+    )
 
     /**
-     * Render using Vulkan (preferred - we have the pipeline foundation).
+     * Filters LiDAR points to only those visible from the observer
+     * based on the current viewshed result.
      */
-    fun renderWithVulkan(points: List<LidarPoint>, visibleOnly: Boolean = true) {
-        // Create vertex buffer from points
-        // Use point list primitive
-        // Fragment shader colors by elevation
-        // If visibleOnly == true, only pass points inside current viewshed
+    fun filterVisiblePoints(
+        allPoints: List<LidarPoint>,
+        viewshedResult: ViewshedEngine.ViewshedResult,
+        maxDistanceM: Double = 5000.0
+    ): List<LidarPoint> {
+        if (viewshedResult.visiblePoints.isEmpty()) return emptyList()
+
+        return allPoints.filter { lidarPoint ->
+            val lidarGeo = GeoPoint(lidarPoint.lat, lidarPoint.lon)
+
+            // Check if point is within max distance
+            val distance = GeoMath.distanceMeters(viewshedResult.observer, lidarGeo)
+            if (distance > maxDistanceM) return@filter false
+
+            // Check against visible points (simple proximity to visible horizon)
+            viewshedResult.visiblePoints.any { visible ->
+                GeoMath.distanceMeters(lidarGeo, visible) < 80 // ~80m tolerance
+            }
+        }
+    }
+
+    fun renderWithVulkan(
+        points: List<LidarPoint>,
+        viewshedResult: ViewshedEngine.ViewshedResult? = null
+    ) {
+        val pointsToRender = if (viewshedResult != null) {
+            filterVisiblePoints(points, viewshedResult)
+        } else {
+            points
+        }
+
+        // TODO: Actual Vulkan point rendering with pointsToRender
+        // Color by elevation using colorByElevation()
     }
 
     fun colorByElevation(elev: Double, minElev: Double, maxElev: Double): Int {
