@@ -2,8 +2,8 @@
 
 **Branch:** feature/complete-high-impact-roadmap
 
-## Recently Completed
-- [x] Full LiDAR point cloud rendering (downsampling + Vulkan rendering path)
-- [x] 3D terrain view (Vulkan-based foundation)
+## Recently Added
+- [x] LiDAR ground point classifier (classification field + simple progressive filter)
+- [x] Ground-only point cloud support for cleaner terrain/viewshed
 
-These are now at a high level of implementation readiness.
+This is now available and wired into the LiDAR rendering pipeline.
