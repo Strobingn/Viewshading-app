@@ -1,25 +1,31 @@
 package com.viewshed.app.viewshed
 
-/**
- * Historical Map Overlays for metal detector / relic hunting.
- * Supports old USGS topo, Sanborn maps, historical imagery with transparency.
- */
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.model.*
+
 object HistoricalMapOverlay {
 
     data class HistoricalMap(
         val name: String,
-        val bounds: com.google.android.gms.maps.model.LatLngBounds,
-        val imagePath: String, // local file or asset
+        val bounds: LatLngBounds,
+        val imagePath: String,
         val year: Int
     )
 
-    fun loadHistoricalMap(name: String, bounds: com.google.android.gms.maps.model.LatLngBounds, imagePath: String, year: Int): HistoricalMap {
-        return HistoricalMap(name, bounds, imagePath, year)
-    }
+    fun addHistoricalOverlay(
+        map: GoogleMap,
+        historicalMap: HistoricalMap,
+        transparency: Float = 0.35f
+    ): GroundOverlay? {
+        // Load bitmap from imagePath (asset or file)
+        // For production: use BitmapDescriptorFactory.fromPath or asset
+        val bitmapDescriptor = BitmapDescriptorFactory.fromAsset(historicalMap.imagePath)
 
-    // Add to GoogleMap as GroundOverlay with transparency control
-    fun addToMap(map: com.google.android.gms.maps.GoogleMap, historicalMap: HistoricalMap, transparency: Float = 0.4f) {
-        // TODO: Load bitmap and create GroundOverlay
-        // map.addGroundOverlay(...)
+        val overlay = GroundOverlayOptions()
+            .image(bitmapDescriptor)
+            .positionFromBounds(historicalMap.bounds)
+            .transparency(transparency)
+
+        return map.addGroundOverlay(overlay)
     }
 }
