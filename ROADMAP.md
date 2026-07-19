@@ -2,34 +2,12 @@
 
 **Branch:** feature/complete-high-impact-roadmap
 
-## Recently Completed
-- [x] USGS 3DEP, NASA SRTM, NOAA bathymetry data source skeletons
-- [x] Automatic DEM download for current map view
-- [x] Compass-based orientation
-- [x] Offline maps caching helper
-- [x] Field notes attachment to locations
-- [x] Voice memo recording helper
-- [x] Map annotations / comments
+## Recently Explored
+- [~] LiDAR point cloud visualization (detailed skeleton + rendering strategy added)
 
 ## Data Sources
-- [x] USGS 3DEP / NASA SRTM / NOAA bathymetry (skeletons)
-- [x] Automatic DEM download for current view
-- [ ] LiDAR point cloud viz
-- [ ] WMS/WCS + ArcGIS services
-- [ ] OpenStreetMap elevation
+- [x] USGS 3DEP / SRTM / NOAA
+- [x] Automatic DEM download
+- [~] LiDAR point cloud rendering (explored)
 
-## Field Use Features
-- [x] GPS tracking + auto observer
-- [x] Compass orientation
-- [x] AR view skeleton
-- [x] Offline maps caching
-- [x] Field notes
-- [x] Photo geotagging
-- [x] Voice memos
-- [ ] Field data forms
-
-## Collaboration Features
-- [x] Map annotations / comments
-- [ ] Real-time multi-user + shared sessions
-
-All features remain modular and non-breaking.
+All other items remain tracked for incremental implementation.
