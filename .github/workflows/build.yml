@@ -19,12 +19,32 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle with caching
+      # === GRADLE CACHING STRATEGIES ===
+      - name: Setup Gradle with advanced caching
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: false
-          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
           gradle-home-cache-cleanup: true
+          # Cache key includes gradle files for better invalidation
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+
+      # Cache Android SDK (speeds up first runs significantly)
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/sdk
+            ~/.android/avd
+          key: ${{ runner.os }}-android-sdk-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-android-sdk-
+
+      # Cache NDK downloads (important for native/Vulkan builds)
+      - name: Cache NDK
+        uses: actions/cache@v4
+        with:
+          path: ~/android-ndk
+          key: ${{ runner.os }}-ndk-26
 
       - name: Setup NDK
         uses: nttld/setup-ndk@v1
