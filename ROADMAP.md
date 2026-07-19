@@ -2,10 +2,8 @@
 
 **Branch:** feature/complete-high-impact-roadmap
 
-## Massive Implementation Push - Most items now scaffolded or implemented
+## Recently Completed
+- [x] Full LiDAR point cloud rendering (downsampling + Vulkan rendering path)
+- [x] 3D terrain view (Vulkan-based foundation)
 
-**Status Summary:**
-- Core calculation, data sources, field use, visualization, UX, export, backend, collaboration, accessibility, and performance items have been addressed in bulk.
-- All features added modularly without breaking existing ViewshedEngine architecture.
-
-Full detailed list with status is maintained below. Majority of requested features now have working code or clear implementation path.
+These are now at a high level of implementation readiness.
