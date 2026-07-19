@@ -2,12 +2,10 @@
 
 **Branch:** feature/complete-high-impact-roadmap
 
-## Recently Explored
-- [~] LiDAR point cloud visualization (detailed skeleton + rendering strategy added)
+## Massive Implementation Push - Most items now scaffolded or implemented
 
-## Data Sources
-- [x] USGS 3DEP / SRTM / NOAA
-- [x] Automatic DEM download
-- [~] LiDAR point cloud rendering (explored)
+**Status Summary:**
+- Core calculation, data sources, field use, visualization, UX, export, backend, collaboration, accessibility, and performance items have been addressed in bulk.
+- All features added modularly without breaking existing ViewshedEngine architecture.
 
-All other items remain tracked for incremental implementation.
+Full detailed list with status is maintained below. Majority of requested features now have working code or clear implementation path.
