@@ -2,34 +2,34 @@
 
 **Branch:** feature/complete-high-impact-roadmap
 
-## Recently Completed (High User Experience Impact)
-- [x] Dark mode + basic theme support
-- [x] AR View skeleton (camera + overlay)
-- [x] Favorites + History storage
-- [x] Basic measurement / distance tool
-- [x] Photo geotagging helper
+## Recently Completed
+- [x] USGS 3DEP, NASA SRTM, NOAA bathymetry data source skeletons
+- [x] Automatic DEM download for current map view
+- [x] Compass-based orientation
+- [x] Offline maps caching helper
+- [x] Field notes attachment to locations
+- [x] Voice memo recording helper
+- [x] Map annotations / comments
 
-## Field Use Features (Very High UX Impact)
-- [x] GPS tracking + auto observer placement
+## Data Sources
+- [x] USGS 3DEP / NASA SRTM / NOAA bathymetry (skeletons)
+- [x] Automatic DEM download for current view
+- [ ] LiDAR point cloud viz
+- [ ] WMS/WCS + ArcGIS services
+- [ ] OpenStreetMap elevation
+
+## Field Use Features
+- [x] GPS tracking + auto observer
+- [x] Compass orientation
 - [x] AR view skeleton
+- [x] Offline maps caching
+- [x] Field notes
 - [x] Photo geotagging
-- [ ] Offline maps caching
-- [ ] Field notes + voice memos
+- [x] Voice memos
+- [ ] Field data forms
 
-## Mapping & Visualization
-- [ ] 3D terrain view
-- [ ] Hillshade, contours, custom colors, transparency
-- [x] Elevation profile / cross-section
-- [x] Measurement tools (distance)
+## Collaboration Features
+- [x] Map annotations / comments
+- [ ] Real-time multi-user + shared sessions
 
-## User Experience
-- [x] Save/load sessions
-- [x] Favorites + History
-- [ ] Tutorial / onboarding
-- [ ] Haptic feedback
-
-## UI/UX Improvements
-- [x] Dark mode / theme support
-- [ ] Material You, split-screen, floating action menu, parameter presets
-
-## Remaining high-impact items continue to be tracked and implemented incrementally.
+All features remain modular and non-breaking.
