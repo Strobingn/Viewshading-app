@@ -1,12 +1,18 @@
-# API Keys
+# API Keys / local config
 secrets.properties
 local.properties
 
-# Android
+# Gradle
+.gradle/
+**/build/
+
+# Android Studio / IDE
 *.iml
 .idea/
-gradle/
-build/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
 
 # Keystores
 *.jks
@@ -14,3 +20,9 @@ build/
 
 # Environment
 .env
+
+# APK outputs (CI uploads artifacts separately)
+*.apk
+*.ap_
+*.aab
+!gradle/wrapper/gradle-wrapper.jar

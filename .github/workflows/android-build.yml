@@ -22,16 +22,17 @@ jobs:
         cache: 'gradle'
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: 8.6
+      uses: gradle/actions/setup-gradle@v4
 
     - name: Make gradlew executable
       run: chmod +x ./gradlew
 
     - name: Create secrets.properties
+      env:
+        MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
       run: |
-        echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" > secrets.properties
+        # Empty key still builds (demo terrain works offline).
+        printf 'MAPS_API_KEY=%s\n' "${MAPS_API_KEY:-}" > secrets.properties
       shell: bash
 
     - name: Build Debug APK
@@ -42,6 +43,7 @@ jobs:
       with:
         name: viewshading-debug-apk
         path: app/build/outputs/apk/debug/*.apk
+        if-no-files-found: error
 
     - name: Build Release APK (unsigned)
       run: ./gradlew assembleRelease --stacktrace
@@ -51,6 +53,7 @@ jobs:
       with:
         name: viewshading-release-apk-unsigned
         path: app/build/outputs/apk/release/*.apk
+        if-no-files-found: error
 
     - name: Run Unit Tests
       run: ./gradlew test --stacktrace
