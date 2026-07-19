@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Viewshed brand: eye over terrain rays -->
+<!-- Viewshed brand: eye over terrain rays — monochrome grey -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
@@ -7,38 +7,38 @@
     android:viewportHeight="108">
     <!-- Terrain base -->
     <path
-        android:fillColor="#1B5E4A"
+        android:fillColor="#424242"
         android:pathData="M10,78 L28,58 L42,68 L58,48 L72,62 L98,42 L98,98 L10,98 Z" />
     <path
-        android:fillColor="#2F9E6B"
+        android:fillColor="#616161"
         android:pathData="M10,88 L30,70 L46,80 L62,60 L78,72 L98,55 L98,98 L10,98 Z" />
     <!-- LOS rays -->
     <path
-        android:strokeColor="#80CBC4"
+        android:strokeColor="#BDBDBD"
         android:strokeWidth="1.5"
         android:pathData="M54,40 L20,70" />
     <path
-        android:strokeColor="#80CBC4"
+        android:strokeColor="#BDBDBD"
         android:strokeWidth="1.5"
         android:pathData="M54,40 L40,78" />
     <path
-        android:strokeColor="#80CBC4"
+        android:strokeColor="#BDBDBD"
         android:strokeWidth="1.5"
         android:pathData="M54,40 L54,82" />
     <path
-        android:strokeColor="#80CBC4"
+        android:strokeColor="#BDBDBD"
         android:strokeWidth="1.5"
         android:pathData="M54,40 L70,78" />
     <path
-        android:strokeColor="#80CBC4"
+        android:strokeColor="#BDBDBD"
         android:strokeWidth="1.5"
         android:pathData="M54,40 L88,70" />
     <!-- Observer eye -->
     <path
-        android:fillColor="#E8F5E9"
+        android:fillColor="#E0E0E0"
         android:pathData="M54,40m-12,0a12,12 0,1 1,24 0a12,12 0,1 1,-24 0" />
     <path
-        android:fillColor="#0F3D30"
+        android:fillColor="#212121"
         android:pathData="M54,40m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
     <path
         android:fillColor="#FFFFFF"

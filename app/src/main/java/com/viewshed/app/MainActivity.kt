@@ -3,20 +3,31 @@ package com.viewshed.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Geocoder
 import android.location.Location
+import android.os.Build
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.MapsInitializer
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
@@ -25,52 +36,46 @@ import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.Polygon
 import com.google.android.gms.maps.model.PolygonOptions
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.slider.Slider
 import com.viewshed.app.databinding.ActivityMainBinding
+import com.viewshed.app.viewshed.AnalysisPreset
+import com.viewshed.app.viewshed.ElevationRepository
+import com.viewshed.app.viewshed.GeoExport
+import com.viewshed.app.viewshed.GeoPoint
+import com.viewshed.app.viewshed.ViewshedEngine
+import com.viewshed.app.viewshed.ViewshedParams
+import com.viewshed.app.viewshed.ViewshedResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.GET
-import retrofit2.http.Query
-import java.util.concurrent.TimeUnit
-import kotlin.math.asin
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
+import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
- * Viewshed Calculator — Google Maps + radial LOS analysis.
+ * Viewshed Calculator — Google Maps + radial LOS (horizon method).
  *
- * Long-press map → place observer → Calculate Viewshed.
- * Demo terrain works offline; real mode uses Google Elevation API (batched).
+ * Long-press map → place observer → Calculate.
+ * Demo terrain offline; real mode uses Google Elevation API.
  */
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var map: GoogleMap
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var bottomSheetBehavior: BottomSheetBehavior<*>
 
-    private var observerMarker: Marker? = null
-    private var visiblePolygon: Polygon? = null
-    private var observerLatLng: LatLng? = null
-    private var lastBoundary: List<LatLng> = emptyList()
+    private val elevationRepo = ElevationRepository()
+    private val observers = mutableListOf<GeoPoint>()
+    private val markers = mutableListOf<Marker>()
+    private val polygons = mutableListOf<Polygon>()
+    private val results = mutableListOf<ViewshedResult>()
 
-    private val elevationService: ElevationService by lazy {
-        Retrofit.Builder()
-            .baseUrl("https://maps.googleapis.com/maps/api/")
-            .addConverterFactory(GsonConverterFactory.create())
-            .client(
-                OkHttpClient.Builder()
-                    .connectTimeout(30, TimeUnit.SECONDS)
-                    .readTimeout(60, TimeUnit.SECONDS)
-                    .build()
-            )
-            .build()
-            .create(ElevationService::class.java)
-    }
+    private var calcJob: Job? = null
+    /** Prevents slider ↔ text feedback loops while editing viewer height. */
+    private var syncingHeight = false
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -80,64 +85,258 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         ) {
             enableMyLocation()
         } else {
-            Toast.makeText(
-                this,
-                "Location denied — using Newburgh NY default.",
-                Toast.LENGTH_LONG
-            ).show()
+            toast("Location denied — Newburgh NY default.")
             moveToDefaultLocation()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        ThemePreferences.applySaved(this)
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // Initialize Maps before fragment async callback (avoids some tablet cold-start blanks)
+        try {
+            MapsInitializer.initialize(applicationContext, MapsInitializer.Renderer.LATEST) { }
+        } catch (e: Exception) {
+            Log.w(TAG, "MapsInitializer", e)
+        }
+
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        bottomSheetBehavior = BottomSheetBehavior.from(binding.bottomSheet)
+        setupBottomSheetInsets()
 
         val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
         mapFragment.getMapAsync(this)
 
-        setupUI()
+        setupUi()
     }
 
-    private fun setupUI() {
-        binding.btnCalculate.setOnClickListener {
-            val latLng = observerLatLng
-            if (latLng == null) {
-                Toast.makeText(this, "Long press on map to place observer first!", Toast.LENGTH_SHORT)
-                    .show()
-            } else {
-                calculateViewshed(latLng)
+    /**
+     * Keep Calculate/Clear fully visible above system nav bar.
+     * Peek height = measured height of handle → action buttons (not the scroll extras).
+     */
+    private fun setupBottomSheetInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(binding.bottomSheet) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(bottom = bars.bottom)
+            ViewCompat.setOnApplyWindowInsetsListener(binding.topBar) { top, topInsets ->
+                val t = topInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+                val lp = top.layoutParams as ViewGroup.MarginLayoutParams
+                lp.topMargin = t.top + (12 * resources.displayMetrics.density).toInt()
+                top.layoutParams = lp
+                topInsets
             }
+            insets
         }
 
-        binding.btnClear.setOnClickListener { clearOverlays() }
-        binding.btnExport.setOnClickListener { exportGeoJson() }
-
-        binding.etObserverHeight.setText("1.7")
-        binding.etMaxDistance.setText("5.0")
-        binding.etNumRays.setText("72")
-        binding.etSampleSteps.setText("80")
-        binding.etRefraction.setText("0.13")
-        binding.switchDemoTerrain.isChecked = true
-        binding.switchCurvature.isChecked = true
-        binding.btnExport.isEnabled = false
+        binding.bottomSheet.post {
+            updatePeekToActionButtons()
+        }
+        binding.actionButtons.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updatePeekToActionButtons()
+        }
     }
+
+    private fun updatePeekToActionButtons() {
+        if (!::bottomSheetBehavior.isInitialized) return
+        val actions = binding.actionButtons
+        // Distance from top of sheet to bottom of primary buttons
+        val peek = actions.bottom + binding.bottomSheet.paddingBottom +
+            (8 * resources.displayMetrics.density).toInt()
+        if (peek > 0) {
+            bottomSheetBehavior.peekHeight = peek
+            bottomSheetBehavior.isFitToContents = true
+        }
+    }
+
+    private fun setupUi() {
+        binding.btnCalculate.setOnClickListener { runCalculation() }
+        binding.btnClear.setOnClickListener { clearAll() }
+        binding.btnExportGeoJson.setOnClickListener { shareText(GeoExport.toGeoJson(results, multiObserver = binding.switchMultiObserver.isChecked), "application/geo+json", "Viewshed.geojson") }
+        binding.btnExportKml.setOnClickListener { shareText(GeoExport.toKml(results), "application/vnd.google-earth.kml+xml", "Viewshed.kml") }
+
+        binding.btnSearch.setOnClickListener { searchPlace() }
+        binding.etSearch.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                searchPlace()
+                true
+            } else false
+        }
+
+        binding.fabMyLocation.setOnClickListener { placeObserverAtMyLocation() }
+        binding.fabAddObserver.setOnClickListener {
+            if (!::map.isInitialized) return@setOnClickListener
+            val c = map.cameraPosition.target
+            placeObserver(GeoPoint(c.latitude, c.longitude), clearOthers = !binding.switchMultiObserver.isChecked)
+        }
+
+        binding.chipHybrid.setOnClickListener { if (::map.isInitialized) map.mapType = GoogleMap.MAP_TYPE_HYBRID }
+        binding.chipTerrain.setOnClickListener { if (::map.isInitialized) map.mapType = GoogleMap.MAP_TYPE_TERRAIN }
+        binding.chipSatellite.setOnClickListener { if (::map.isInitialized) map.mapType = GoogleMap.MAP_TYPE_SATELLITE }
+        binding.chipNormal.setOnClickListener { if (::map.isInitialized) map.mapType = GoogleMap.MAP_TYPE_NORMAL }
+
+        binding.chipPresetTree.setOnClickListener { applyPreset(AnalysisPreset.TREE_STAND) }
+        binding.chipPresetKayak.setOnClickListener { applyPreset(AnalysisPreset.KAYAK) }
+        binding.chipPresetRidge.setOnClickListener { applyPreset(AnalysisPreset.RIDGE) }
+        binding.chipPresetCustom.setOnClickListener { /* keep current fields */ }
+
+        binding.btnSettings.setOnClickListener { showSettingsDialog() }
+
+        setupViewerHeightControls()
+
+        // Prefer real elevation when Maps key is baked in
+        binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
+        if (!BuildConfig.HAS_MAPS_API_KEY) {
+            Log.w(TAG, getString(R.string.no_api_key_demo))
+        }
+
+        setExportEnabled(false)
+    }
+
+    private fun showSettingsDialog() {
+        val labels = arrayOf(
+            getString(R.string.theme_system),
+            getString(R.string.theme_light),
+            getString(R.string.theme_dark)
+        )
+        val modes = intArrayOf(
+            ThemePreferences.MODE_SYSTEM,
+            ThemePreferences.MODE_LIGHT,
+            ThemePreferences.MODE_DARK
+        )
+        val current = ThemePreferences.getMode(this)
+        val checked = modes.indexOf(current).coerceAtLeast(0)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.theme_dialog_title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                ThemePreferences.setMode(this, modes[which])
+                dialog.dismiss()
+                // Night mode change recreates activities when needed
+                recreate()
+            }
+            .setNegativeButton(R.string.settings_done, null)
+            .show()
+    }
+
+    /**
+     * Viewer (eye) height: always-visible slider, numeric field, ± buttons, quick chips.
+     * Applied on every Calculate via [readParams].
+     */
+    private fun setupViewerHeightControls() {
+        setViewerHeightM(1.7, fromUser = false)
+
+        binding.sliderViewerHeight.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
+            if (!fromUser || syncingHeight) return@addOnChangeListener
+            setViewerHeightM(value.toDouble(), fromUser = true, source = HeightSource.SLIDER)
+        }
+
+        binding.btnHeightMinus.setOnClickListener {
+            val next = (currentViewerHeightM() - HEIGHT_STEP_M).coerceAtLeast(0.0)
+            setViewerHeightM(next, fromUser = true, source = HeightSource.BUTTON)
+        }
+        binding.btnHeightPlus.setOnClickListener {
+            val next = (currentViewerHeightM() + HEIGHT_STEP_M).coerceAtMost(HEIGHT_MAX_M)
+            setViewerHeightM(next, fromUser = true, source = HeightSource.BUTTON)
+        }
+
+        binding.etObserverHeight.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                if (syncingHeight) return
+                val v = s?.toString()?.toDoubleOrNull() ?: return
+                setViewerHeightM(v, fromUser = true, source = HeightSource.TEXT)
+            }
+        })
+
+        binding.chipHeightProne.setOnClickListener { setViewerHeightM(0.5, fromUser = true, source = HeightSource.CHIP) }
+        binding.chipHeightStanding.setOnClickListener { setViewerHeightM(1.7, fromUser = true, source = HeightSource.CHIP) }
+        binding.chipHeightTree.setOnClickListener { setViewerHeightM(5.0, fromUser = true, source = HeightSource.CHIP) }
+        binding.chipHeightRoof.setOnClickListener { setViewerHeightM(12.0, fromUser = true, source = HeightSource.CHIP) }
+        binding.chipHeightTower.setOnClickListener { setViewerHeightM(20.0, fromUser = true, source = HeightSource.CHIP) }
+    }
+
+    private fun currentViewerHeightM(): Double =
+        binding.etObserverHeight.text?.toString()?.toDoubleOrNull()
+            ?: binding.sliderViewerHeight.value.toDouble()
+
+    private fun setViewerHeightM(
+        meters: Double,
+        fromUser: Boolean,
+        source: HeightSource = HeightSource.TEXT
+    ) {
+        val clamped = meters.coerceIn(0.0, HEIGHT_MAX_M)
+        // Round to 0.1 m for clean display / slider steps
+        val rounded = (clamped * 10.0).roundToInt() / 10.0
+        syncingHeight = true
+        try {
+            if (source != HeightSource.TEXT) {
+                val text = if (rounded == rounded.toLong().toDouble()) {
+                    rounded.toLong().toString()
+                } else {
+                    String.format(Locale.US, "%.1f", rounded)
+                }
+                if (binding.etObserverHeight.text?.toString() != text) {
+                    binding.etObserverHeight.setText(text)
+                    binding.etObserverHeight.setSelection(text.length)
+                }
+            }
+            if (source != HeightSource.SLIDER) {
+                val sliderVal = rounded.toFloat().coerceIn(
+                    binding.sliderViewerHeight.valueFrom,
+                    binding.sliderViewerHeight.valueTo
+                )
+                if (kotlin.math.abs(binding.sliderViewerHeight.value - sliderVal) > 0.05f) {
+                    binding.sliderViewerHeight.value = sliderVal
+                }
+            }
+            updateHeightQuickChips(rounded)
+            updateObserverMarkerSnippets(rounded)
+        } finally {
+            syncingHeight = false
+        }
+        if (fromUser) {
+            binding.chipPresetCustom.isChecked = true
+        }
+    }
+
+    private fun updateHeightQuickChips(meters: Double) {
+        binding.chipHeightProne.isChecked = kotlin.math.abs(meters - 0.5) < 0.05
+        binding.chipHeightStanding.isChecked = kotlin.math.abs(meters - 1.7) < 0.05
+        binding.chipHeightTree.isChecked = kotlin.math.abs(meters - 5.0) < 0.05
+        binding.chipHeightRoof.isChecked = kotlin.math.abs(meters - 12.0) < 0.05
+        binding.chipHeightTower.isChecked = kotlin.math.abs(meters - 20.0) < 0.05
+    }
+
+    private fun updateObserverMarkerSnippets(eyeM: Double) {
+        markers.forEachIndexed { index, marker ->
+            marker.snippet = "Eye height: ${String.format(Locale.US, "%.1f", eyeM)} m"
+            marker.title = "Observer ${index + 1}"
+        }
+    }
+
+    private enum class HeightSource { SLIDER, TEXT, BUTTON, CHIP }
 
     override fun onMapReady(googleMap: GoogleMap) {
         map = googleMap
         map.mapType = GoogleMap.MAP_TYPE_HYBRID
         map.uiSettings.isZoomControlsEnabled = true
-        map.uiSettings.isMyLocationButtonEnabled = true
+        map.uiSettings.isMyLocationButtonEnabled = false
+        map.uiSettings.isCompassEnabled = true
 
-        map.setOnMapLongClickListener { placeObserver(it) }
+        map.setOnMapLongClickListener { latLng ->
+            placeObserver(
+                GeoPoint(latLng.latitude, latLng.longitude),
+                clearOthers = !binding.switchMultiObserver.isChecked
+            )
+        }
 
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED
         ) {
             enableMyLocation()
         } else {
@@ -148,7 +347,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 )
             )
         }
-
         moveToDefaultLocation()
     }
 
@@ -158,13 +356,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun enableMyLocation() {
-        if (ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
         map.isMyLocationEnabled = true
         fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
             location?.let {
@@ -175,311 +369,287 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun placeObserver(latLng: LatLng) {
-        observerMarker?.remove()
-        observerMarker = map.addMarker(
-            MarkerOptions()
-                .position(latLng)
-                .title("Observer")
-                .snippet("Eye height: ${binding.etObserverHeight.text} m")
-                .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
-        )
-        observerLatLng = latLng
-        map.animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 14f))
-        Toast.makeText(this, "Observer placed. Tap Calculate Viewshed.", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun calculateViewshed(observer: LatLng) {
-        lifecycleScope.launch {
-            try {
-                binding.btnCalculate.isEnabled = false
-                binding.btnCalculate.text = "Calculating..."
-                binding.progressBar.visibility = View.VISIBLE
-
-                val height = binding.etObserverHeight.text.toString().toDoubleOrNull() ?: 1.7
-                val maxDistKm = binding.etMaxDistance.text.toString().toDoubleOrNull() ?: 5.0
-                val numRays = (binding.etNumRays.text.toString().toIntOrNull() ?: 72).coerceIn(8, 360)
-                val samples = (binding.etSampleSteps.text.toString().toIntOrNull() ?: 80).coerceIn(10, 200)
-                val useDemo = binding.switchDemoTerrain.isChecked
-                val useCurvature = binding.switchCurvature.isChecked
-                val refraction = binding.etRefraction.text.toString().toDoubleOrNull() ?: 0.13
-
-                val boundary = withContext(Dispatchers.Default) {
-                    computeViewshedBoundary(
-                        observer = observer,
-                        eyeHeightM = height,
-                        maxDistKm = maxDistKm,
-                        numRays = numRays,
-                        samples = samples,
-                        useDemo = useDemo,
-                        useCurvature = useCurvature,
-                        refraction = refraction
-                    )
-                }
-
-                lastBoundary = boundary
-                drawVisiblePolygon(boundary)
-                binding.btnExport.isEnabled = boundary.size >= 3
-
-                Toast.makeText(
-                    this@MainActivity,
-                    "Viewshed ready — ${boundary.size} boundary points.",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } catch (e: Exception) {
-                Log.e(TAG, "Calculation error", e)
-                Toast.makeText(
-                    this@MainActivity,
-                    "Error: ${e.message}. Try demo mode or check API key.",
-                    Toast.LENGTH_LONG
-                ).show()
-            } finally {
-                binding.btnCalculate.isEnabled = true
-                binding.btnCalculate.text = getString(R.string.calculate_viewshed)
-                binding.progressBar.visibility = View.GONE
-            }
-        }
-    }
-
-    private suspend fun computeViewshedBoundary(
-        observer: LatLng,
-        eyeHeightM: Double,
-        maxDistKm: Double,
-        numRays: Int,
-        samples: Int,
-        useDemo: Boolean,
-        useCurvature: Boolean,
-        refraction: Double
-    ): List<LatLng> {
-        // Build all sample points (observer + rays)
-        data class Sample(val ray: Int, val step: Int, val latLng: LatLng, val distM: Double)
-
-        val samplesList = ArrayList<Sample>(numRays * samples + 1)
-        samplesList.add(Sample(-1, 0, observer, 0.0))
-        for (i in 0 until numRays) {
-            val bearing = i * 360.0 / numRays
-            for (s in 1..samples) {
-                val distM = s * (maxDistKm * 1000.0) / samples
-                samplesList.add(
-                    Sample(i, s, computeDestinationPoint(observer, bearing, distM), distM)
+    private fun placeObserverAtMyLocation() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            locationPermissionRequest.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
                 )
-            }
-        }
-
-        val elevMap = if (useDemo) {
-            samplesList.associate { s ->
-                s.latLng to getDemoElevation(s.latLng.latitude, s.latLng.longitude)
-            }
-        } else {
-            fetchElevationsBatched(samplesList.map { it.latLng })
-        }
-
-        val observerElev = elevMap[observer]
-            ?: getDemoElevation(observer.latitude, observer.longitude)
-        val eyeElev = observerElev + eyeHeightM
-
-        val boundary = ArrayList<LatLng>(numRays + 1)
-        for (i in 0 until numRays) {
-            val bearing = i * 360.0 / numRays
-            var maxVisibleDist = 0.0
-
-            for (s in 1..samples) {
-                val distM = s * (maxDistKm * 1000.0) / samples
-                val target = computeDestinationPoint(observer, bearing, distM)
-                val terrainElev = elevMap[target]
-                    ?: getDemoElevation(target.latitude, target.longitude)
-                val losHeight = computeLineOfSightHeight(eyeElev, distM, useCurvature, refraction)
-                if (terrainElev > losHeight) break
-                maxVisibleDist = distM
-            }
-
-            if (maxVisibleDist > 0) {
-                boundary.add(computeDestinationPoint(observer, bearing, maxVisibleDist))
-            } else {
-                boundary.add(observer)
-            }
-        }
-
-        if (boundary.isNotEmpty()) {
-            boundary.add(boundary.first())
-        }
-        return boundary
-    }
-
-    /** Google Elevation allows up to 512 locations per request, pipe-separated. */
-    private suspend fun fetchElevationsBatched(points: List<LatLng>): Map<LatLng, Double> {
-        val result = HashMap<LatLng, Double>(points.size)
-        val key = BuildConfig.MAPS_API_KEY
-        if (key.isBlank()) {
-            Log.w(TAG, "No MAPS_API_KEY — falling back to demo elevations")
-            points.forEach { result[it] = getDemoElevation(it.latitude, it.longitude) }
-            return result
-        }
-
-        val unique = points.distinctBy { "${"%.6f".format(it.latitude)},${"%.6f".format(it.longitude)}" }
-        for (chunk in unique.chunked(ELEVATION_BATCH_SIZE)) {
-            val locations = chunk.joinToString("|") { "${it.latitude},${it.longitude}" }
-            try {
-                val response = withContext(Dispatchers.IO) {
-                    elevationService.getElevation(locations, key)
-                }
-                if (response.status == "OK" && response.results.isNotEmpty()) {
-                    response.results.forEachIndexed { idx, elev ->
-                        if (idx < chunk.size) {
-                            result[chunk[idx]] = elev.elevation
-                        }
-                    }
-                } else {
-                    Log.w(TAG, "Elevation API: ${response.status}")
-                    chunk.forEach { result[it] = getDemoElevation(it.latitude, it.longitude) }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Elevation batch failed", e)
-                chunk.forEach { result[it] = getDemoElevation(it.latitude, it.longitude) }
-            }
-        }
-
-        // Fill any missing
-        points.forEach { p ->
-            if (p !in result) {
-                result[p] = getDemoElevation(p.latitude, p.longitude)
-            }
-        }
-        return result
-    }
-
-    private fun computeDestinationPoint(start: LatLng, bearingDeg: Double, distanceM: Double): LatLng {
-        val r = EARTH_RADIUS_M
-        val d = distanceM / r
-        val bearing = Math.toRadians(bearingDeg)
-        val lat1 = Math.toRadians(start.latitude)
-        val lon1 = Math.toRadians(start.longitude)
-        val lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing))
-        val lon2 = lon1 + atan2(
-            sin(bearing) * sin(d) * cos(lat1),
-            cos(d) - sin(lat1) * sin(lat2)
-        )
-        return LatLng(Math.toDegrees(lat2), Math.toDegrees(lon2))
-    }
-
-    private fun computeLineOfSightHeight(
-        observerElev: Double,
-        distM: Double,
-        useCurvature: Boolean,
-        refractionCoeff: Double
-    ): Double {
-        if (!useCurvature) return observerElev
-        val curvatureDrop = (distM * distM) / (2 * EARTH_RADIUS_M)
-        val refractionCorrection = refractionCoeff * curvatureDrop
-        return observerElev - curvatureDrop + refractionCorrection
-    }
-
-    /** Deterministic demo hills around Newburgh / Hudson valley. */
-    private fun getDemoElevation(lat: Double, lon: Double): Double {
-        val base = 20.0
-        val latRad = Math.toRadians(lat)
-        val lonRad = Math.toRadians(lon)
-        val hill1 = 80 * sin(latRad * 50) * cos(lonRad * 40)
-        val hill2 = 40 * sin(latRad * 120 + 1.3) * cos(lonRad * 90)
-        val hill3 = 25 * sin(latRad * 300) * cos(lonRad * 250)
-        val riverEffect = if (lon < -73.95) -15.0 else 0.0
-        val noise = coordHash(lat, lon) * 5
-        return base + hill1 + hill2 + hill3 + riverEffect + noise
-    }
-
-    private fun coordHash(lat: Double, lon: Double): Double {
-        val h = (lat * 100_000 + lon * 100_000).toLong()
-        return (h % 100) / 100.0
-    }
-
-    private fun drawVisiblePolygon(boundary: List<LatLng>) {
-        visiblePolygon?.remove()
-        if (boundary.size < 3) {
-            Toast.makeText(this, "Not enough visible points for polygon.", Toast.LENGTH_SHORT).show()
+            )
             return
         }
-        visiblePolygon = map.addPolygon(
+        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+            if (location == null) {
+                toast("No location fix yet — try again outdoors.")
+                return@addOnSuccessListener
+            }
+            placeObserver(
+                GeoPoint(location.latitude, location.longitude),
+                clearOthers = !binding.switchMultiObserver.isChecked
+            )
+            map.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(
+                    LatLng(location.latitude, location.longitude),
+                    14f
+                )
+            )
+        }
+    }
+
+    private fun placeObserver(point: GeoPoint, clearOthers: Boolean) {
+        if (!::map.isInitialized) return
+        if (clearOthers) {
+            clearOverlaysOnly()
+            observers.clear()
+        }
+        observers.add(point)
+        val hue = MARKER_HUES[(observers.size - 1) % MARKER_HUES.size]
+        val marker = map.addMarker(
+            MarkerOptions()
+                .position(LatLng(point.lat, point.lon))
+                .title("Observer ${observers.size}")
+                .snippet("Eye: ${binding.etObserverHeight.text} m")
+                .icon(BitmapDescriptorFactory.defaultMarker(hue))
+        )
+        marker?.let { markers.add(it) }
+        map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(point.lat, point.lon), 14f))
+        toast("Observer ${observers.size} placed. Tap Calculate.")
+    }
+
+    private fun applyPreset(preset: AnalysisPreset) {
+        val p = preset.toParams()
+        setViewerHeightM(p.eyeHeightM, fromUser = false, source = HeightSource.CHIP)
+        binding.etTargetHeight.setText(p.targetHeightM.toString())
+        binding.etMaxDistance.setText(p.maxDistKm.toString())
+        binding.etNumRays.setText(p.numRays.toString())
+        binding.etSampleSteps.setText(p.samplesPerRay.toString())
+        when (preset) {
+            AnalysisPreset.TREE_STAND -> binding.chipPresetTree.isChecked = true
+            AnalysisPreset.KAYAK -> binding.chipPresetKayak.isChecked = true
+            AnalysisPreset.RIDGE -> binding.chipPresetRidge.isChecked = true
+            AnalysisPreset.CUSTOM -> binding.chipPresetCustom.isChecked = true
+        }
+        toast("${preset.label} preset applied (viewer ${p.eyeHeightM} m)")
+    }
+
+    private fun readParams(): ViewshedParams = ViewshedParams(
+        eyeHeightM = currentViewerHeightM(),
+        targetHeightM = binding.etTargetHeight.text?.toString()?.toDoubleOrNull() ?: 0.0,
+        maxDistKm = binding.etMaxDistance.text?.toString()?.toDoubleOrNull() ?: 5.0,
+        numRays = binding.etNumRays.text?.toString()?.toIntOrNull() ?: 72,
+        samplesPerRay = binding.etSampleSteps.text?.toString()?.toIntOrNull() ?: 80,
+        useDemoTerrain = binding.switchDemoTerrain.isChecked,
+        useCurvature = binding.switchCurvature.isChecked,
+        refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13
+    ).sanitized()
+
+    private fun runCalculation() {
+        if (observers.isEmpty()) {
+            toast("Long-press the map to place an observer first.")
+            return
+        }
+        calcJob?.cancel()
+        calcJob = lifecycleScope.launch {
+            try {
+                setCalculating(true)
+                val params = readParams()
+                val multi = binding.switchMultiObserver.isChecked
+                val targets = if (multi) observers.toList() else listOf(observers.last())
+
+                if (!multi) {
+                    polygons.forEach { it.remove() }
+                    polygons.clear()
+                    results.clear()
+                }
+
+                val newResults = mutableListOf<ViewshedResult>()
+                targets.forEachIndexed { index, observer ->
+                    binding.tvProgress.visibility = View.VISIBLE
+                    binding.tvProgress.text = "Observer ${index + 1}/${targets.size}…"
+
+                    val samples = ViewshedEngine.samplePoints(observer, params)
+                    val elev = withContext(Dispatchers.IO) {
+                        elevationRepo.resolveElevations(samples, params.useDemoTerrain)
+                    }
+                    val result = withContext(Dispatchers.Default) {
+                        ViewshedEngine.compute(
+                            observer = observer,
+                            params = params,
+                            elevations = elev,
+                            onRayProgress = { done, total ->
+                                runOnUiThread {
+                                    val pct = (100.0 * done / total).toInt()
+                                    binding.progressBar.progress = pct
+                                    binding.tvProgress.text = getString(
+                                        R.string.progress_format,
+                                        done,
+                                        total,
+                                        pct
+                                    )
+                                }
+                            }
+                        )
+                    }
+                    newResults.add(result)
+                    drawResult(result, polygons.size)
+                }
+
+                results.addAll(newResults)
+                showStats(results)
+                setExportEnabled(results.any { it.boundary.size >= 3 })
+                toast("Viewshed ready — ${results.size} observer(s).")
+            } catch (e: Exception) {
+                Log.e(TAG, "Calculation error", e)
+                toast("Error: ${e.message}. Try demo mode or check API key.")
+            } finally {
+                setCalculating(false)
+            }
+        }
+    }
+
+    private fun drawResult(result: ViewshedResult, colorIndex: Int) {
+        if (result.boundary.size < 3) return
+        val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
+        val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
+        val poly = map.addPolygon(
             PolygonOptions()
-                .addAll(boundary)
-                .fillColor(0x6600C853)
-                .strokeColor(0xFF00A040.toInt())
+                .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
+                .fillColor(fill)
+                .strokeColor(stroke)
                 .strokeWidth(3f)
                 .geodesic(true)
         )
-        observerMarker?.snippet = "Viewshed calculated — green = visible"
+        polygons.add(poly)
     }
 
-    private fun clearOverlays() {
-        visiblePolygon?.remove()
-        visiblePolygon = null
-        observerMarker?.remove()
-        observerMarker = null
-        observerLatLng = null
-        lastBoundary = emptyList()
-        binding.btnExport.isEnabled = false
-        Toast.makeText(this, "Cleared. Long press to place new observer.", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun exportGeoJson() {
-        val points = lastBoundary
-        if (points.size < 3) {
-            Toast.makeText(this, "No visible polygon to export.", Toast.LENGTH_SHORT).show()
+    private fun showStats(list: List<ViewshedResult>) {
+        if (list.isEmpty()) {
+            binding.tvStats.visibility = View.GONE
             return
         }
+        val maxKm = list.maxOf { it.stats.maxRangeKm }
+        val avgKm = list.map { it.stats.avgRangeKm }.average()
+        val area = list.sumOf { it.stats.areaKm2 }
+        val rays = list.sumOf { it.stats.numRays }
+        binding.tvStats.visibility = View.VISIBLE
+        binding.tvStats.text = getString(R.string.stats_format, maxKm, avgKm, area, rays)
+    }
 
-        val coords = points.joinToString(",") { "[${it.longitude},${it.latitude}]" }
-        val obsLat = observerLatLng?.latitude
-        val obsLon = observerLatLng?.longitude
-        val geoJson = """
-            {
-              "type": "FeatureCollection",
-              "features": [{
-                "type": "Feature",
-                "geometry": {
-                  "type": "Polygon",
-                  "coordinates": [[$coords]]
-                },
-                "properties": {
-                  "observer_lat": $obsLat,
-                  "observer_lon": $obsLon,
-                  "description": "Viewshed visible area"
-                }
-              }]
-            }
-        """.trimIndent()
-
-        Log.d(TAG, geoJson)
-
-        val share = Intent(Intent.ACTION_SEND).apply {
-            type = "application/geo+json"
-            putExtra(Intent.EXTRA_SUBJECT, "Viewshed GeoJSON")
-            putExtra(Intent.EXTRA_TEXT, geoJson)
+    private fun searchPlace() {
+        val query = binding.etSearch.text?.toString()?.trim().orEmpty()
+        if (query.isEmpty()) {
+            toast("Enter an address or place name.")
+            return
         }
-        startActivity(Intent.createChooser(share, "Share Viewshed GeoJSON"))
+        lifecycleScope.launch {
+            try {
+                val geo = withContext(Dispatchers.IO) {
+                    @Suppress("DEPRECATION")
+                    val geocoder = Geocoder(this@MainActivity, Locale.getDefault())
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        // sync fallback for simplicity
+                        geocoder.getFromLocationName(query, 1)
+                    } else {
+                        geocoder.getFromLocationName(query, 1)
+                    }
+                }
+                val hit = geo?.firstOrNull()
+                if (hit == null) {
+                    toast("No results for “$query”.")
+                    return@launch
+                }
+                val point = GeoPoint(hit.latitude, hit.longitude)
+                map.animateCamera(
+                    CameraUpdateFactory.newLatLngZoom(LatLng(point.lat, point.lon), 14f)
+                )
+                placeObserver(point, clearOthers = !binding.switchMultiObserver.isChecked)
+            } catch (e: Exception) {
+                Log.e(TAG, "Geocode failed", e)
+                toast("Search failed: ${e.message}")
+            }
+        }
     }
 
-    interface ElevationService {
-        @GET("elevation/json")
-        suspend fun getElevation(
-            @Query("locations") locations: String,
-            @Query("key") key: String
-        ): ElevationResponse
+    private fun clearOverlaysOnly() {
+        polygons.forEach { it.remove() }
+        polygons.clear()
+        markers.forEach { it.remove() }
+        markers.clear()
+        results.clear()
     }
 
-    data class ElevationResponse(
-        val status: String,
-        val results: List<ElevationResult> = emptyList()
-    )
+    private fun clearAll() {
+        calcJob?.cancel()
+        clearOverlaysOnly()
+        observers.clear()
+        binding.tvStats.visibility = View.GONE
+        setExportEnabled(false)
+        setCalculating(false)
+        toast("Cleared. Long-press to place a new observer.")
+    }
 
-    data class ElevationResult(
-        val elevation: Double,
-        val resolution: Double? = null
-    )
+    private fun setCalculating(active: Boolean) {
+        binding.btnCalculate.isEnabled = !active
+        binding.btnCalculate.text = if (active) "Calculating…" else getString(R.string.calculate_viewshed)
+        binding.progressBar.visibility = if (active) View.VISIBLE else View.GONE
+        binding.tvProgress.visibility = if (active) View.VISIBLE else View.GONE
+        if (!active) binding.progressBar.progress = 0
+    }
+
+    private fun setExportEnabled(enabled: Boolean) {
+        binding.btnExportGeoJson.isEnabled = enabled
+        binding.btnExportKml.isEnabled = enabled
+    }
+
+    private fun shareText(body: String, mime: String, title: String) {
+        if (results.isEmpty()) {
+            toast("Nothing to export.")
+            return
+        }
+        Log.d(TAG, body.take(500))
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        startActivity(Intent.createChooser(share, "Share $title"))
+    }
+
+    private fun toast(msg: String) =
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     companion object {
         private const val TAG = "Viewshed"
-        private const val EARTH_RADIUS_M = 6_371_000.0
-        private const val ELEVATION_BATCH_SIZE = 100
+        private const val HEIGHT_STEP_M = 0.5
+        private const val HEIGHT_MAX_M = 100.0
         private val NEWBURGH = LatLng(41.499, -74.010)
+
+        // Grays only for multi-observer markers (no green/red brand)
+        private val MARKER_HUES = floatArrayOf(
+            BitmapDescriptorFactory.HUE_AZURE,
+            BitmapDescriptorFactory.HUE_VIOLET,
+            BitmapDescriptorFactory.HUE_ORANGE,
+            BitmapDescriptorFactory.HUE_ROSE,
+            BitmapDescriptorFactory.HUE_CYAN
+        )
+
+        // ARGB translucent grays
+        private val FILL_COLORS = intArrayOf(
+            0x66BDBDBD,
+            0x669E9E9E,
+            0x66757575,
+            0x66E0E0E0,
+            0x66616161
+        )
+        private val STROKE_COLORS = intArrayOf(
+            0xFFE0E0E0.toInt(),
+            0xFFBDBDBD.toInt(),
+            0xFF9E9E9E.toInt(),
+            0xFFEEEEEE.toInt(),
+            0xFF757575.toInt()
+        )
     }
 }

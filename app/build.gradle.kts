@@ -13,19 +13,22 @@ android {
         applicationId = "com.viewshed.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // secrets.properties (gitignored) or env MAPS_API_KEY
+        // secrets.properties (gitignored) or same env keys as FieldOps
         val secrets = Properties().apply {
             rootProject.file("secrets.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
         }
         val mapsKey = secrets.getProperty("MAPS_API_KEY")
+            ?: secrets.getProperty("GOOGLE_MAPS_API_KEY")
             ?: System.getenv("MAPS_API_KEY")
+            ?: System.getenv("GOOGLE_MAPS_API_KEY") // FieldOps env name
             ?: ""
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsKey\"")
+        buildConfigField("boolean", "HAS_MAPS_API_KEY", "${mapsKey.isNotBlank()}")
         manifestPlaceholders["MAPS_API_KEY"] = mapsKey
     }
 
@@ -56,6 +59,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("com.google.android.gms:play-services-maps:18.2.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
