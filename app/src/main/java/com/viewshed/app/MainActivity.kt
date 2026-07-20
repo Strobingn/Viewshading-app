@@ -1,3 +1,6 @@
+Here is the full MainActivity.kt file from commit e92f9c28f64115b4f1801b72db2ad5a054ab9357. Note: This is the original version (400+ lines), not the fully wired 857-line version with all 25 features. The wired version integrating SessionManager, FavoritesManager, HistoryManager, UndoRedoManager, etc. was mentioned as provided in conversation history but is not currently on the Mistral-test-app branch.
+
+```kotlin
 package com.viewshed.app
 
 import android.Manifest
@@ -231,6 +234,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         binding.sliderViewerHeight.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             if (!fromUser || syncingHeight) return@addOnChangeListener
+
             setViewerHeightM(value.toDouble(), fromUser = true, source = HeightSource.SLIDER)
         }
 
@@ -558,7 +562,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
                 val hit = geo?.firstOrNull()
                 if (hit == null) {
-                    toast("No results for “$query”.")
+                    toast("No results for \"$query\".")
                     return@launch
                 }
                 val point = GeoPoint(hit.latitude, hit.longitude)
@@ -653,3 +657,4 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         )
     }
 }
+```
