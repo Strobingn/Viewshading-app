@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.viewshed.app"
     compileSdk = 35
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.viewshed.app"
@@ -16,7 +17,8 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments += "-DANDROID_STL=c++_shared"
+                arguments.add("-DANDROID_STL=c++_shared")
+                abiFilters.addAll("arm64-v8a", "x86_64")
             }
         }
     }
@@ -40,10 +42,15 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
-    // Add Vulkan if using wrapper, or rely on NDK
 }
