@@ -111,31 +111,33 @@
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fabMyLocation"
+    <!-- FABs stacked above bottom sheet; margins updated in code from peek height -->
+    <LinearLayout
+        android:id="@+id/fabColumn"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="end|bottom"
         android:layout_marginEnd="16dp"
-        android:layout_marginBottom="16dp"
-        android:contentDescription="@string/use_my_location"
-        app:layout_anchor="@id/bottomSheet"
-        app:layout_anchorGravity="top|end"
-        app:srcCompat="@android:drawable/ic_menu_mylocation"
-        app:tint="@android:color/white" />
+        android:layout_marginBottom="220dp"
+        android:orientation="vertical">
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fabAddObserver"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end|bottom"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="80dp"
-        android:contentDescription="@string/add_observer_here"
-        app:layout_anchor="@id/bottomSheet"
-        app:layout_anchorGravity="top|end"
-        app:srcCompat="@android:drawable/ic_input_add"
-        app:tint="@android:color/white" />
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabAddObserver"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:contentDescription="@string/add_observer_here"
+            app:srcCompat="@android:drawable/ic_input_add"
+            app:tint="@android:color/white" />
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabMyLocation"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:contentDescription="@string/use_my_location"
+            app:srcCompat="@android:drawable/ic_menu_mylocation"
+            app:tint="@android:color/white" />
+    </LinearLayout>
 
     <!--
       Bottom sheet: PEAK content is only handle + height + Calculate/Clear.
@@ -148,7 +150,8 @@
         android:background="@drawable/bg_bottom_sheet"
         android:elevation="12dp"
         android:orientation="vertical"
-        app:behavior_fitToContents="true"
+        app:behavior_fitToContents="false"
+        app:behavior_halfExpandedRatio="0.55"
         app:behavior_hideable="false"
         app:behavior_peekHeight="200dp"
         app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
@@ -300,6 +303,7 @@
             android:layout_height="wrap_content"
             android:clipToPadding="false"
             android:fillViewport="false"
+            android:maxHeight="420dp"
             android:overScrollMode="ifContentScrolls">
 
             <LinearLayout
@@ -310,15 +314,16 @@
                 android:paddingHorizontal="12dp"
                 android:paddingBottom="24dp">
 
+                <!-- Integer cm steps avoid Material float stepSize bugs -->
                 <com.google.android.material.slider.Slider
                     android:id="@+id/sliderViewerHeight"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:contentDescription="@string/viewer_height_label"
-                    android:stepSize="0.1"
-                    android:value="1.7"
+                    android:stepSize="1"
+                    android:value="17"
                     android:valueFrom="0"
-                    android:valueTo="100"
+                    android:valueTo="1000"
                     app:labelBehavior="gone" />
 
                 <HorizontalScrollView

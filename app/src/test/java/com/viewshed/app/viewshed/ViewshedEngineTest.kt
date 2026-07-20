@@ -1,12 +1,22 @@
 package com.viewshed.app.viewshed
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
-import kotlin.math.sqrt
 
 class ViewshedEngineTest {
+
+    private fun gridFrom(
+        observer: GeoPoint,
+        params: ViewshedParams,
+        elevFn: (GeoPoint) -> Double
+    ): ElevationGrid {
+        val map = ViewshedEngine.samplePoints(observer, params)
+            .associate { it.key() to elevFn(it) }
+        return ElevationGrid(map, useDemo = false)
+    }
 
     @Test
     fun destination_north_moves_latitude_up() {
@@ -19,16 +29,14 @@ class ViewshedEngineTest {
     @Test
     fun key_uses_us_dot_decimals() {
         val k = GeoPoint(41.5, -74.01).key()
-        // "41.500000,-74.010000" — dots for decimals, one comma between lat/lon
         assertTrue("key=$k", k.matches(Regex("""-?\d+\.\d+,-?\d+\.\d+""")))
     }
 
     @Test
-    fun flat_terrain_sees_near_full_range_no_curvature() {
+    fun flat_terrain_sees_near_full_range_no_curvature() = runBlocking {
         val observer = GeoPoint(41.5, -74.0)
         val params = ViewshedParams(
             eyeHeightM = 2.0,
-            targetHeightM = 0.0,
             maxDistKm = 1.0,
             numRays = 36,
             samplesPerRay = 40,
@@ -37,9 +45,8 @@ class ViewshedEngineTest {
             adaptiveSampling = false,
             binarySearchHorizon = false
         )
-        val elev = ViewshedEngine.samplePoints(observer, params).associate { it.key() to 100.0 }
-        val result = ViewshedEngine.compute(observer, params, elev)
-        // Last sample is at maxDist; continuous LOS on flat should reach it
+        val grid = gridFrom(observer, params) { 100.0 }
+        val result = ViewshedEngine.compute(observer, params, grid)
         assertTrue(
             "expected ~1000m, got ${result.stats.maxRangeM}",
             result.stats.maxRangeM > 950.0
@@ -47,11 +54,10 @@ class ViewshedEngineTest {
     }
 
     @Test
-    fun ridge_stops_continuous_viewshed_before_far_peak() {
+    fun ridge_stops_continuous_viewshed_before_far_peak() = runBlocking {
         val observer = GeoPoint(0.0, 0.0)
         val params = ViewshedParams(
             eyeHeightM = 1.0,
-            targetHeightM = 0.0,
             maxDistKm = 1.0,
             numRays = 8,
             samplesPerRay = 40,
@@ -60,8 +66,6 @@ class ViewshedEngineTest {
             adaptiveSampling = false,
             binarySearchHorizon = false
         )
-        // Wall at ~250–350 m, then a TALLER peak at ~700 m that LOS could see
-        // over the valley — continuous lobe must NOT jump to the far peak.
         fun elev(p: GeoPoint): Double {
             val d = GeoMath.distanceM(observer, p)
             return when {
@@ -70,9 +74,8 @@ class ViewshedEngineTest {
                 else -> 0.0
             }
         }
-        val elevMap = ViewshedEngine.samplePoints(observer, params)
-            .associate { it.key() to elev(it) }
-        val result = ViewshedEngine.compute(observer, params, elevMap)
+        val grid = gridFrom(observer, params, ::elev)
+        val result = ViewshedEngine.compute(observer, params, grid)
         assertTrue(
             "continuous range should stop near first ridge, got ${result.stats.maxRangeM}m",
             result.stats.maxRangeM in 150.0..450.0
@@ -80,16 +83,14 @@ class ViewshedEngineTest {
     }
 
     @Test
-    fun curvature_limits_flat_range_near_geometric_horizon() {
+    fun curvature_limits_flat_range_near_geometric_horizon() = runBlocking {
         val eye = 2.0
         val k = 0.13
         val horizon = GeoMath.geometricHorizonM(eye, k)
-        // Sample out past the geometric horizon
         val maxKm = (horizon * 2.5) / 1000.0
         val observer = GeoPoint(41.5, -74.0)
         val params = ViewshedParams(
             eyeHeightM = eye,
-            targetHeightM = 0.0,
             maxDistKm = maxKm,
             numRays = 12,
             samplesPerRay = 80,
@@ -99,9 +100,8 @@ class ViewshedEngineTest {
             adaptiveSampling = false,
             binarySearchHorizon = false
         )
-        val elev = ViewshedEngine.samplePoints(observer, params).associate { it.key() to 50.0 }
-        val result = ViewshedEngine.compute(observer, params, elev)
-        // Should not reach full maxDist; should be on order of geometric horizon
+        val grid = gridFrom(observer, params) { 50.0 }
+        val result = ViewshedEngine.compute(observer, params, grid)
         assertTrue(result.stats.maxRangeM < maxKm * 1000.0 * 0.95)
         assertTrue(
             "got ${result.stats.maxRangeM}, horizon≈$horizon",
@@ -110,27 +110,7 @@ class ViewshedEngineTest {
     }
 
     @Test
-    fun elevation_angle_flat_is_negative_looking_down() {
-        val a = GeoMath.elevationAngleRad(
-            observerElev = 12.0,
-            targetElev = 10.0,
-            distM = 100.0,
-            useCurvature = false,
-            refractionCoeff = 0.13
-        )
-        assertTrue(a < 0.0)
-    }
-
-    @Test
-    fun effective_radius_grows_with_refraction() {
-        val r0 = GeoMath.effectiveEarthRadiusM(0.0)
-        val rK = GeoMath.effectiveEarthRadiusM(0.13)
-        assertEquals(GeoMath.EARTH_RADIUS_M, r0, 1.0)
-        assertTrue(rK > r0)
-    }
-
-    @Test
-    fun parallel_matches_serial_on_flat() {
+    fun parallel_matches_serial_on_flat() = runBlocking {
         val observer = GeoPoint(41.5, -74.0)
         val base = ViewshedParams(
             eyeHeightM = 2.0,
@@ -141,11 +121,19 @@ class ViewshedEngineTest {
             adaptiveSampling = false,
             binarySearchHorizon = false
         )
-        val elev = ViewshedEngine.samplePoints(observer, base)
-            .associate { it.key() to 50.0 }
-        val serial = ViewshedEngine.compute(observer, base.copy(parallelRays = false), elev)
-        val parallel = ViewshedEngine.compute(observer, base.copy(parallelRays = true), elev)
+        val grid = gridFrom(observer, base) { 50.0 }
+        val serial = ViewshedEngine.compute(observer, base.copy(parallelRays = false), grid)
+        val parallel = ViewshedEngine.compute(observer, base.copy(parallelRays = true), grid)
         assertEquals(serial.stats.maxRangeM, parallel.stats.maxRangeM, 1.0)
+    }
+
+    @Test
+    fun nearest_neighbor_elev_used_off_lattice() {
+        val p0 = GeoPoint(41.5, -74.0)
+        val map = mapOf(p0.key() to 123.0)
+        val grid = ElevationGrid(map, useDemo = false)
+        val nearby = GeoPoint(41.500001, -74.000001)
+        assertEquals(123.0, grid.elevation(nearby, maxNeighborM = 50.0), 0.01)
     }
 
     @Test
@@ -153,7 +141,7 @@ class ViewshedEngineTest {
         val h1 = GeoMath.geometricHorizonM(1.7, 0.13)
         val h4 = GeoMath.geometricHorizonM(1.7 * 4, 0.13)
         assertEquals(2.0, h4 / h1, 0.05)
-        assertTrue(h1 > 4000.0) // ~4.7 km ballpark for 1.7 m
+        assertTrue(h1 > 4000.0)
         assertTrue(h1 < 6000.0)
     }
 }

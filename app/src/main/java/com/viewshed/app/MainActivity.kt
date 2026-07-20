@@ -87,10 +87,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         ) {
-            enableMyLocation()
+            if (::map.isInitialized) enableMyLocation(centerIfAvailable = true)
         } else {
             toast("Location denied — Newburgh NY default.")
-            moveToDefaultLocation()
         }
     }
 
@@ -123,37 +122,50 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
      * Peek height = measured height of handle → action buttons (not the scroll extras).
      */
     private fun setupBottomSheetInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(binding.bottomSheet) { view, insets ->
+        bottomSheetBehavior.isFitToContents = false
+        bottomSheetBehavior.skipCollapsed = false
+        bottomSheetBehavior.isHideable = false
+        bottomSheetBehavior.halfExpandedRatio = 0.55f
+        bottomSheetBehavior.state = BottomSheetBehavior.STATE_COLLAPSED
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.rootCoordinator) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.updatePadding(bottom = bars.bottom)
-            ViewCompat.setOnApplyWindowInsetsListener(binding.topBar) { top, topInsets ->
-                val t = topInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-                val lp = top.layoutParams as ViewGroup.MarginLayoutParams
-                lp.topMargin = t.top + (12 * resources.displayMetrics.density).toInt()
-                top.layoutParams = lp
-                topInsets
-            }
+            binding.bottomSheet.updatePadding(bottom = bars.bottom)
+            val topLp = binding.topBar.layoutParams as ViewGroup.MarginLayoutParams
+            topLp.topMargin = bars.top + (12 * resources.displayMetrics.density).toInt()
+            binding.topBar.layoutParams = topLp
             insets
         }
 
-        binding.bottomSheet.post {
-            updatePeekToActionButtons()
-        }
+        binding.bottomSheet.post { updatePeekToActionButtons() }
         binding.actionButtons.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updatePeekToActionButtons()
         }
+        bottomSheetBehavior.addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
+            override fun onStateChanged(bottomSheet: View, newState: Int) = Unit
+            override fun onSlide(bottomSheet: View, slideOffset: Float) {
+                positionFabs(bottomSheetBehavior.peekHeight)
+            }
+        })
     }
 
     private fun updatePeekToActionButtons() {
         if (!::bottomSheetBehavior.isInitialized) return
         val actions = binding.actionButtons
-        // Distance from top of sheet to bottom of primary buttons
         val peek = actions.bottom + binding.bottomSheet.paddingBottom +
             (8 * resources.displayMetrics.density).toInt()
         if (peek > 0) {
             bottomSheetBehavior.peekHeight = peek
-            bottomSheetBehavior.isFitToContents = true
+            bottomSheetBehavior.isFitToContents = false
+            positionFabs(peek)
         }
+    }
+
+    private fun positionFabs(peekPx: Int) {
+        val lp = binding.fabColumn.layoutParams as ViewGroup.MarginLayoutParams
+        val gap = (12 * resources.displayMetrics.density).toInt()
+        lp.bottomMargin = peekPx + gap
+        binding.fabColumn.layoutParams = lp
     }
 
     private fun setupUi() {
@@ -264,7 +276,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         binding.sliderViewerHeight.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             if (!fromUser || syncingHeight) return@addOnChangeListener
-            setViewerHeightM(value.toDouble(), fromUser = true, source = HeightSource.SLIDER)
+            // Slider is in centimetres (0–1000)
+            setViewerHeightM(value / 10.0, fromUser = true, source = HeightSource.SLIDER)
         }
 
         binding.btnHeightMinus.setOnClickListener {
@@ -295,7 +308,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun currentViewerHeightM(): Double =
         binding.etObserverHeight.text?.toString()?.toDoubleOrNull()
-            ?: binding.sliderViewerHeight.value.toDouble()
+            ?: (binding.sliderViewerHeight.value / 10.0).toDouble()
 
     private fun setViewerHeightM(
         meters: Double,
@@ -319,12 +332,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
             }
             if (source != HeightSource.SLIDER) {
-                val sliderVal = rounded.toFloat().coerceIn(
+                val cm = (rounded * 10.0).roundToInt().toFloat().coerceIn(
                     binding.sliderViewerHeight.valueFrom,
                     binding.sliderViewerHeight.valueTo
                 )
-                if (kotlin.math.abs(binding.sliderViewerHeight.value - sliderVal) > 0.05f) {
-                    binding.sliderViewerHeight.value = sliderVal
+                if (kotlin.math.abs(binding.sliderViewerHeight.value - cm) >= 0.5f) {
+                    binding.sliderViewerHeight.value = cm
                 }
             }
             updateHeightQuickChips(rounded)
@@ -360,6 +373,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         map.uiSettings.isZoomControlsEnabled = true
         map.uiSettings.isMyLocationButtonEnabled = false
         map.uiSettings.isCompassEnabled = true
+        map.uiSettings.isMapToolbarEnabled = false
 
         map.setOnMapLongClickListener { latLng ->
             placeObserver(
@@ -368,10 +382,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             )
         }
 
+        // Default camera first; GPS may override — never overwrite GPS with Newburgh later.
+        moveToDefaultLocation()
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            enableMyLocation()
+            enableMyLocation(centerIfAvailable = true)
         } else {
             locationPermissionRequest.launch(
                 arrayOf(
@@ -380,26 +397,44 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 )
             )
         }
-        moveToDefaultLocation()
     }
 
     private fun moveToDefaultLocation() {
         if (!::map.isInitialized) return
-        map.moveCamera(CameraUpdateFactory.newLatLngZoom(NEWBURGH, 12f))
+        try {
+            map.moveCamera(CameraUpdateFactory.newLatLngZoom(NEWBURGH, 12f))
+        } catch (e: Exception) {
+            Log.w(TAG, "moveCamera failed", e)
+        }
     }
 
-    private fun enableMyLocation() {
+    private fun enableMyLocation(centerIfAvailable: Boolean = true) {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) return
-        map.isMyLocationEnabled = true
-        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-            location?.let {
-                map.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 13f)
-                )
-            }
+        try {
+            map.isMyLocationEnabled = true
+        } catch (e: Exception) {
+            Log.w(TAG, "myLocation", e)
+            return
         }
+        if (!centerIfAvailable) return
+        fusedLocationClient.lastLocation
+            .addOnSuccessListener { location: Location? ->
+                location?.let {
+                    try {
+                        map.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(
+                                LatLng(it.latitude, it.longitude),
+                                13f
+                            )
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "animateCamera", e)
+                    }
+                }
+            }
+            .addOnFailureListener { Log.w(TAG, "lastLocation failed", it) }
     }
 
     private fun placeObserverAtMyLocation() {
@@ -488,6 +523,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             toast("Long-press the map to place an observer first.")
             return
         }
+        if (!::map.isInitialized) {
+            toast("Map not ready yet.")
+            return
+        }
         calcJob?.cancel()
         calcJob = lifecycleScope.launch {
             try {
@@ -496,11 +535,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val multi = binding.switchMultiObserver.isChecked
                 val targets = if (multi) observers.toList() else listOf(observers.last())
 
-                if (!multi) {
-                    polygons.forEach { it.remove() }
-                    polygons.clear()
-                    results.clear()
-                }
+                // Always redraw this run's polygons (avoid stacking duplicates)
+                polygons.forEach { it.remove() }
+                polygons.clear()
+                results.clear()
 
                 val newResults = mutableListOf<ViewshedResult>()
                 targets.forEachIndexed { index, observer ->
@@ -511,33 +549,30 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     val elev = withContext(Dispatchers.IO) {
                         elevationRepo.resolveElevations(samples, params.useDemoTerrain)
                     }
-                    val result = withContext(Dispatchers.Default) {
-                        ViewshedEngine.compute(
-                            observer = observer,
-                            params = params,
-                            elevations = elev,
-                            onRayProgress = { done, total ->
-                                runOnUiThread {
-                                    val pct = (100.0 * done / total).toInt()
-                                    binding.progressBar.progress = pct
-                                    binding.tvProgress.text = getString(
-                                        R.string.progress_format,
-                                        done,
-                                        total,
-                                        pct
-                                    )
-                                }
+                    val result = ViewshedEngine.compute(
+                        observer = observer,
+                        params = params,
+                        elevations = elev,
+                        onRayProgress = { done, total ->
+                            withContext(Dispatchers.Main.immediate) {
+                                val pct = (100.0 * done / total).toInt()
+                                binding.progressBar.progress = pct
+                                binding.tvProgress.text = getString(
+                                    R.string.progress_format,
+                                    done,
+                                    total,
+                                    pct
+                                )
                             }
-                        )
-                    }
+                        }
+                    )
                     newResults.add(result)
-                    drawResult(result, polygons.size)
+                    if (::map.isInitialized) drawResult(result, index)
                 }
 
                 results.addAll(newResults)
                 showStats(results)
                 setExportEnabled(results.any { it.boundary.size >= 3 })
-                // Persist last session for experimental save/load
                 newResults.lastOrNull()?.let { last ->
                     try {
                         val file = java.io.File(filesDir, "last_session.json")
@@ -546,10 +581,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         Log.w(TAG, "session save failed", e)
                     }
                 }
-                toast("Viewshed ready — ${results.size} observer(s).")
+                val mode = if (params.useDemoTerrain) "demo" else "elevation API"
+                toast("Viewshed ready — ${results.size} observer(s) · $mode")
             } catch (e: Exception) {
                 Log.e(TAG, "Calculation error", e)
-                toast("Error: ${e.message}. Try demo mode or check API key.")
+                toast("Error: ${e.message ?: e.javaClass.simpleName}")
             } finally {
                 setCalculating(false)
             }
@@ -558,17 +594,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun drawResult(result: ViewshedResult, colorIndex: Int) {
         if (result.boundary.size < 3) return
-        val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
-        val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
-        val poly = map.addPolygon(
-            PolygonOptions()
-                .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
-                .fillColor(fill)
-                .strokeColor(stroke)
-                .strokeWidth(3f)
-                .geodesic(true)
-        )
-        polygons.add(poly)
+        try {
+            val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
+            val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
+            val poly = map.addPolygon(
+                PolygonOptions()
+                    .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
+                    .fillColor(fill)
+                    .strokeColor(stroke)
+                    .strokeWidth(3f)
+                    .geodesic(true)
+            )
+            polygons.add(poly)
+        } catch (e: Exception) {
+            Log.e(TAG, "drawResult", e)
+        }
     }
 
     private fun showStats(list: List<ViewshedResult>) {
