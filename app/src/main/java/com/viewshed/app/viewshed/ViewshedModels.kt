@@ -10,21 +10,21 @@ data class ViewshedParams(
     val useCurvature: Boolean = true,
     val refraction: Double = 0.13,
     val parallelRays: Boolean = true,
-    /** Retained for saved-session compatibility; fixed-grid analysis disables it. */
-    val adaptiveSampling: Boolean = false,
-    /** Retained for saved-session compatibility; terrain visibility is not monotonic. */
+    val adaptiveSampling: Boolean = true,
     val binarySearchHorizon: Boolean = false,
-    val quality: SampleQuality = SampleQuality.MEDIUM
+    val quality: SampleQuality = SampleQuality.MEDIUM,
+    val terrainComplexityThresholdM: Double = 8.0,
+    val maxAdaptiveDepth: Int = 3
 ) {
     fun sanitized(): ViewshedParams = copy(
         eyeHeightM = eyeHeightM.coerceIn(0.0, 100.0),
         targetHeightM = targetHeightM.coerceIn(0.0, 200.0),
         maxDistKm = maxDistKm.coerceIn(0.1, 50.0),
-        numRays = numRays.coerceIn(8, 360),
-        samplesPerRay = samplesPerRay.coerceIn(10, 250),
+        numRays = numRays.coerceIn(8, 720),
+        samplesPerRay = samplesPerRay.coerceIn(10, 500),
         refraction = refraction.coerceIn(0.0, 0.99),
-        adaptiveSampling = false,
-        binarySearchHorizon = false
+        terrainComplexityThresholdM = terrainComplexityThresholdM.coerceIn(0.5, 100.0),
+        maxAdaptiveDepth = maxAdaptiveDepth.coerceIn(0, 6)
     )
 
     fun withQuality(q: SampleQuality): ViewshedParams = copy(
@@ -40,26 +40,39 @@ enum class SampleQuality(val label: String, val rays: Int, val samples: Int) {
     HIGH("Detailed", 120, 120)
 }
 
-/** Visibility of one terrain/target sample along a ray. */
 data class VisibilitySample(
     val point: GeoPoint,
     val distanceM: Double,
     val terrainElevationM: Double,
     val terrainAngleRad: Double,
     val targetAngleRad: Double,
-    val visible: Boolean
+    val visible: Boolean,
+    val horizonAngleRad: Double = Double.NEGATIVE_INFINITY
 )
 
 data class VisibilityRay(
     val bearingDeg: Double,
     val samples: List<VisibilitySample>,
-    val farthestVisibleM: Double
+    val farthestVisibleM: Double,
+    val horizonPoint: GeoPoint? = null,
+    val horizonAngleRad: Double = Double.NEGATIVE_INFINITY
 )
 
-/**
- * One contiguous visible run within a ray's angular wedge.
- * Multiple sectors on a ray preserve hidden valleys followed by visible peaks.
- */
+data class ElevationProfilePoint(
+    val distanceM: Double,
+    val elevationM: Double,
+    val visible: Boolean,
+    val lineOfSightElevationM: Double
+)
+
+data class HorizonPoint(
+    val bearingDeg: Double,
+    val point: GeoPoint,
+    val distanceM: Double,
+    val elevationM: Double,
+    val elevationAngleRad: Double
+)
+
 data class VisibleSector(
     val bearingStartDeg: Double,
     val bearingEndDeg: Double,
@@ -78,7 +91,9 @@ data class ViewshedStats(
     val numRays: Int,
     val samplesPerRay: Int,
     val visibleCells: Int = 0,
-    val totalCells: Int = 0
+    val totalCells: Int = 0,
+    val visibilityPercent: Double = if (totalCells > 0) visibleCells * 100.0 / totalCells else 0.0,
+    val averageTerrainElevationM: Double = 0.0
 ) {
     val maxRangeKm: Double get() = maxRangeM / 1000.0
     val avgRangeKm: Double get() = avgRangeM / 1000.0
@@ -86,14 +101,30 @@ data class ViewshedStats(
 
 data class ViewshedResult(
     val observer: GeoPoint,
-    /** Outer extent only; use [visibleSectors] for the actual visible mask. */
     val boundary: List<GeoPoint>,
     val rangesM: List<Double>,
     val stats: ViewshedStats,
     val params: ViewshedParams,
     val visibilityRays: List<VisibilityRay> = emptyList(),
-    val visibleSectors: List<VisibleSector> = emptyList()
-)
+    val visibleSectors: List<VisibleSector> = emptyList(),
+    val horizonLine: List<HorizonPoint> = emptyList()
+) {
+    fun elevationProfile(bearingDeg: Double): List<ElevationProfilePoint> {
+        val ray = visibilityRays.minByOrNull { kotlin.math.abs(it.bearingDeg - bearingDeg) }
+            ?: return emptyList()
+        val observerElevation = ray.samples.firstOrNull()?.let {
+            it.terrainElevationM - kotlin.math.tan(it.terrainAngleRad) * it.distanceM
+        } ?: 0.0
+        return ray.samples.map { sample ->
+            ElevationProfilePoint(
+                distanceM = sample.distanceM,
+                elevationM = sample.terrainElevationM,
+                visible = sample.visible,
+                lineOfSightElevationM = observerElevation + kotlin.math.tan(sample.horizonAngleRad) * sample.distanceM
+            )
+        }
+    }
+}
 
 enum class AnalysisPreset(
     val label: String,
