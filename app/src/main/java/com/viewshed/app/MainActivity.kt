@@ -64,10 +64,12 @@ import com.viewshed.app.viewshed.ViewshedParams
 import com.viewshed.app.viewshed.ViewshedResult
 import com.viewshed.app.viewshed.VoiceMemoHelper
 import com.viewshed.app.viewshed.VulkanViewshed
+import com.viewshed.app.viewshed.terrain.TerrainEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -137,6 +139,34 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val photo = photoGeotag.importAndGeotag(uri, loc)
         if (photo != null) toast("Photo geotagged @ ${"%.5f".format(loc.lat)}, ${"%.5f".format(loc.lon)}")
         else toast("Geotag failed")
+    }
+
+    /** Load local DEM (.asc / .csv) into the terrain engine. */
+    private val pickDemRequest = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            try {
+                val name = uri.lastPathSegment?.substringAfterLast('/') ?: "dem.asc"
+                val grid = withContext(Dispatchers.IO) {
+                    val cache = File(cacheDir, "import_${System.currentTimeMillis()}_$name")
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        cache.outputStream().use { output -> input.copyTo(output) }
+                    } ?: error("Cannot open DEM")
+                    TerrainEngine.loadAuto(cache)
+                }
+                elevationRepo.localTerrain = grid
+                binding.chipElevLocal.isChecked = true
+                binding.switchDemoTerrain.isChecked = false
+                updateTerrainStatus()
+                val s = grid.stats()
+                toast("Terrain loaded: ${grid.name} (${s.validCells} cells)")
+            } catch (e: Exception) {
+                Log.e("Viewshed", "DEM load failed", e)
+                toast("DEM load failed: ${e.message}")
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -282,6 +312,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         setupQualityAndExperimental()
         setupFieldTools()
         setupProAnalysis()
+        setupTerrainEngine()
 
         // Prefer real elevation when Maps key is baked in
         binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
@@ -311,10 +342,66 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun selectedElevSource(): ElevationRepository.ElevSource = when {
+        binding.chipElevLocal.isChecked -> ElevationRepository.ElevSource.LOCAL_DEM
         binding.chipElevUsgs.isChecked -> ElevationRepository.ElevSource.USGS_3DEP
         binding.chipElevSrtm.isChecked -> ElevationRepository.ElevSource.SRTM
         binding.chipElevEtopo.isChecked -> ElevationRepository.ElevSource.ETOPO
         else -> ElevationRepository.ElevSource.GOOGLE
+    }
+
+    private fun setupTerrainEngine() {
+        binding.btnLoadDem.setOnClickListener {
+            pickDemRequest.launch(
+                arrayOf(
+                    "text/*",
+                    "text/csv",
+                    "text/plain",
+                    "application/octet-stream",
+                    "*/*",
+                ),
+            )
+        }
+        binding.btnDemoDem.setOnClickListener {
+            lifecycleScope.launch {
+                val center =
+                    observers.lastOrNull()
+                        ?: GeoPoint(41.503, -74.01)
+                val grid = withContext(Dispatchers.Default) {
+                    TerrainEngine.generateDemoRegion(center = center)
+                }
+                elevationRepo.localTerrain = grid
+                binding.chipElevLocal.isChecked = true
+                binding.switchDemoTerrain.isChecked = false
+                updateTerrainStatus()
+                toast("Demo DEM grid ready around ${"%.4f".format(center.lat)}, ${"%.4f".format(center.lon)}")
+            }
+        }
+        binding.chipElevLocal.setOnCheckedChangeListener { _, checked ->
+            if (checked && elevationRepo.localTerrain == null) {
+                // Auto-generate demo region so Local DEM always has a surface
+                binding.btnDemoDem.performClick()
+            }
+            updateTerrainStatus()
+        }
+        updateTerrainStatus()
+    }
+
+    private fun updateTerrainStatus() {
+        val t = elevationRepo.localTerrain
+        if (t == null) {
+            binding.tvTerrainStatus.text = getString(R.string.terrain_none)
+            return
+        }
+        val s = t.stats()
+        binding.tvTerrainStatus.text =
+            getString(
+                R.string.terrain_loaded,
+                t.name,
+                t.ncols,
+                t.nrows,
+                s.minElevM,
+                s.maxElevM,
+            )
     }
 
     private fun compassCardinal(deg: Float): String {

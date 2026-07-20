@@ -30,7 +30,7 @@ For agents and terminal workflows (Android CLI, build/deploy, skills), see **[AG
 - Export visible area as GeoJSON (share/save).
 - Multiple observers mode (cumulative).
 - Settings for curvature/refraction (default 0.13 refraction coeff).
-- Local DEM support stub (load small GeoTIFF or CSV grid – extend with GDAL Java or pure parser).
+- **Local DEM terrain engine**: load ESRI ASCII Grid (`.asc`/`.grd`) or CSV (`lat,lon,elev`); bilinear sampling feeds the viewshed; demo DEM grid for offline Newburgh area. (GeoTIFF/GDAL still planned.)
 
 ## Architecture
 - Pure Kotlin + Google Play Services Maps.

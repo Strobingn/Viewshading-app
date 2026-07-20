@@ -3,6 +3,8 @@ package com.viewshed.app.viewshed
 import android.util.Log
 import com.viewshed.app.BuildConfig
 import com.viewshed.app.data.ElevationDataSources
+import com.viewshed.app.viewshed.terrain.TerrainEngine
+import com.viewshed.app.viewshed.terrain.TerrainGrid
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -45,31 +47,44 @@ class ElevationRepository {
         /** Open-Topo-Data SRTM 90 m. */
         SRTM,
         /** Open-Topo-Data ETOPO1 (includes bathymetry). */
-        ETOPO
+        ETOPO,
+        /** Local DEM terrain engine (ASC/CSV or in-memory grid). */
+        LOCAL_DEM
     }
+
+    /** Active local DEM from TerrainEngine (set by UI when user loads a file). */
+    @Volatile
+    var localTerrain: TerrainGrid? = null
 
     /**
      * @param offline Prefer / fill from [OfflineMapCache] when provided.
      * @param offlineOnly Skip network; use offline pack + demo fallback only.
      * @param source Network elevation product when not demo/offline-only.
+     * @param terrain Optional explicit local DEM (defaults to [localTerrain]).
      */
     suspend fun resolveElevations(
         points: List<GeoPoint>,
         useDemo: Boolean,
         offline: OfflineMapCache? = null,
         offlineOnly: Boolean = false,
-        source: ElevSource = ElevSource.GOOGLE
+        source: ElevSource = ElevSource.GOOGLE,
+        terrain: TerrainGrid? = localTerrain,
     ): ElevationGrid {
         if (useDemo || source == ElevSource.DEMO) {
             val map = points.associate { it.key() to DemoTerrain.elevation(it) }
             return ElevationGrid(map, useDemo = true)
+        }
+        if (source == ElevSource.LOCAL_DEM) {
+            val dem = terrain ?: TerrainEngine.generateDemoRegion()
+            localTerrain = dem
+            return TerrainEngine.toElevationGrid(dem, points)
         }
         if (offlineOnly && offline != null) {
             val map = HashMap<String, Double>(points.size)
             for (p in points) {
                 map[p.key()] = offline.elevation(p) ?: DemoTerrain.elevation(p)
             }
-            return ElevationGrid(map, useDemo = false)
+            return ElevationGrid(map, useDemo = false, terrain = terrain)
         }
         val map = when (source) {
             ElevSource.GOOGLE -> fetchElevationsBatched(points).toMutableMap()
@@ -77,6 +92,7 @@ class ElevationRepository {
             ElevSource.SRTM -> fetchOpenTopo(ElevationDataSources.Source.SRTM, points)
             ElevSource.ETOPO -> fetchOpenTopo(ElevationDataSources.Source.ETOPO, points)
             ElevSource.DEMO -> points.associate { it.key() to DemoTerrain.elevation(it) }.toMutableMap()
+            ElevSource.LOCAL_DEM -> emptyMap<String, Double>().toMutableMap()
         }
         if (offline != null) {
             for (p in points) {
@@ -85,7 +101,7 @@ class ElevationRepository {
                 }
             }
         }
-        return ElevationGrid(map, useDemo = false)
+        return ElevationGrid(map, useDemo = false, terrain = terrain)
     }
 
     private suspend fun fetchOpenTopo(
@@ -168,11 +184,13 @@ class ElevationRepository {
 }
 
 /**
- * Elevation map with nearest-neighbor fallback for off-lattice sample points.
+ * Elevation map with optional continuous [terrain] surface + nearest-neighbor fallback.
  */
 class ElevationGrid(
     private val byKey: Map<String, Double>,
-    val useDemo: Boolean
+    val useDemo: Boolean,
+    /** Local DEM terrain engine surface (bilinear). Preferred when present. */
+    val terrain: com.viewshed.app.viewshed.terrain.TerrainGrid? = null,
 ) {
     private val samples: List<Pair<GeoPoint, Double>> by lazy {
         byKey.mapNotNull { (k, elev) ->
@@ -185,8 +203,10 @@ class ElevationGrid(
     }
 
     fun elevation(point: GeoPoint, maxNeighborM: Double = 75.0): Double {
+        // Continuous local DEM first (true terrain engine)
+        terrain?.sampleBilinear(point.lat, point.lon)?.let { return it }
+
         byKey[point.key()]?.let { return it }
-        // Tighter / looser keys
         byKey[point.key(5)]?.let { return it }
         byKey[point.key(7)]?.let { return it }
 
@@ -196,7 +216,6 @@ class ElevationGrid(
 
         var best = Double.MAX_VALUE
         var bestElev: Double? = null
-        // Cheap local degree box then haversine-ish meters
         val latScale = 111_320.0
         val lonScale = 111_320.0 * cos(Math.toRadians(point.lat)).coerceAtLeast(0.2)
         val maxDegLat = maxNeighborM / latScale

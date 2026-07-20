@@ -64,6 +64,7 @@ GIS-style analysis in `ProfessionalAnalysis.kt` + UI under **Professional analys
 | ArcGIS / WMS / WCS | [ ] |
 | OpenStreetMap elev | [~] (Open-Topo-Data) |
 | Automatic DEM download | [~] (offline pack capture) |
+| **Local DEM terrain engine** (ASC/CSV + bilinear) | [x] `TerrainEngine` / `TerrainGrid` + UI Load DEM |
 | LiDAR visualization | [ ] (archived) |
 
 ---
