@@ -1,6 +1,3 @@
-Here is the full MainActivity.kt file from commit e92f9c28f64115b4f1801b72db2ad5a054ab9357. Note: This is the original version (400+ lines), not the fully wired 857-line version with all 25 features. The wired version integrating SessionManager, FavoritesManager, HistoryManager, UndoRedoManager, etc. was mentioned as provided in conversation history but is not currently on the Mistral-test-app branch.
-
-```kotlin
 package com.viewshed.app
 
 import android.Manifest
@@ -44,12 +41,16 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import com.viewshed.app.databinding.ActivityMainBinding
 import com.viewshed.app.viewshed.AnalysisPreset
+import com.viewshed.app.viewshed.AnalysisSession
+import com.viewshed.app.viewshed.AnalysisSessionManager
 import com.viewshed.app.viewshed.ElevationRepository
 import com.viewshed.app.viewshed.GeoExport
 import com.viewshed.app.viewshed.GeoPoint
+import com.viewshed.app.viewshed.SampleQuality
 import com.viewshed.app.viewshed.ViewshedEngine
 import com.viewshed.app.viewshed.ViewshedParams
 import com.viewshed.app.viewshed.ViewshedResult
+import com.viewshed.app.viewshed.VulkanViewshed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -189,14 +190,43 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnSettings.setOnClickListener { showSettingsDialog() }
 
         setupViewerHeightControls()
+        setupQualityAndExperimental()
 
         // Prefer real elevation when Maps key is baked in
         binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
         if (!BuildConfig.HAS_MAPS_API_KEY) {
             Log.w(TAG, getString(R.string.no_api_key_demo))
         }
+        // Probe optional native path once (never required)
+        lifecycleScope.launch(Dispatchers.IO) {
+            val ok = VulkanViewshed.isAvailable()
+            Log.i(TAG, "Vulkan experimental available=$ok")
+        }
 
         setExportEnabled(false)
+    }
+
+    private fun setupQualityAndExperimental() {
+        binding.chipQualityLow.setOnClickListener { applyQuality(SampleQuality.LOW) }
+        binding.chipQualityMed.setOnClickListener { applyQuality(SampleQuality.MEDIUM) }
+        binding.chipQualityHigh.setOnClickListener { applyQuality(SampleQuality.HIGH) }
+    }
+
+    private fun applyQuality(q: SampleQuality) {
+        binding.etNumRays.setText(q.rays.toString())
+        binding.etSampleSteps.setText(q.samples.toString())
+        when (q) {
+            SampleQuality.LOW -> binding.chipQualityLow.isChecked = true
+            SampleQuality.MEDIUM -> binding.chipQualityMed.isChecked = true
+            SampleQuality.HIGH -> binding.chipQualityHigh.isChecked = true
+        }
+        toast("${q.label}: ${q.rays} rays × ${q.samples} samples")
+    }
+
+    private fun selectedQuality(): SampleQuality = when {
+        binding.chipQualityLow.isChecked -> SampleQuality.LOW
+        binding.chipQualityHigh.isChecked -> SampleQuality.HIGH
+        else -> SampleQuality.MEDIUM
     }
 
     private fun showSettingsDialog() {
@@ -234,7 +264,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         binding.sliderViewerHeight.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             if (!fromUser || syncingHeight) return@addOnChangeListener
-
             setViewerHeightM(value.toDouble(), fromUser = true, source = HeightSource.SLIDER)
         }
 
@@ -447,7 +476,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         samplesPerRay = binding.etSampleSteps.text?.toString()?.toIntOrNull() ?: 80,
         useDemoTerrain = binding.switchDemoTerrain.isChecked,
         useCurvature = binding.switchCurvature.isChecked,
-        refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13
+        refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13,
+        parallelRays = binding.switchParallel.isChecked,
+        adaptiveSampling = binding.switchAdaptive.isChecked,
+        binarySearchHorizon = binding.switchBinaryHorizon.isChecked,
+        quality = selectedQuality()
     ).sanitized()
 
     private fun runCalculation() {
@@ -504,6 +537,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 results.addAll(newResults)
                 showStats(results)
                 setExportEnabled(results.any { it.boundary.size >= 3 })
+                // Persist last session for experimental save/load
+                newResults.lastOrNull()?.let { last ->
+                    try {
+                        val file = java.io.File(filesDir, "last_session.json")
+                        AnalysisSessionManager.save(AnalysisSession.fromResult(last), file)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "session save failed", e)
+                    }
+                }
                 toast("Viewshed ready — ${results.size} observer(s).")
             } catch (e: Exception) {
                 Log.e(TAG, "Calculation error", e)
@@ -562,7 +604,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
                 val hit = geo?.firstOrNull()
                 if (hit == null) {
-                    toast("No results for \"$query\".")
+                    toast("No results for “$query”.")
                     return@launch
                 }
                 val point = GeoPoint(hit.latitude, hit.longitude)
@@ -657,4 +699,3 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         )
     }
 }
-```

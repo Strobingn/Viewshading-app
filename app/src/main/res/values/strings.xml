@@ -36,6 +36,13 @@
     <string name="preset_custom">Custom</string>
     <string name="parameters">Parameters</string>
     <string name="multi_observer">Multi-observer (keep previous)</string>
+    <string name="quality_label">Sample quality</string>
+    <string name="quality_fast">Fast</string>
+    <string name="quality_balanced">Balanced</string>
+    <string name="quality_accurate">Accurate</string>
+    <string name="adaptive_sampling">Adaptive sampling (experimental)</string>
+    <string name="binary_horizon">Binary-search horizon (experimental)</string>
+    <string name="parallel_rays">Parallel rays (faster)</string>
     <string name="stats_format">Max %1$.2f km · Avg %2$.2f km · %3$.3f km² · %4$d rays</string>
     <string name="progress_format">Ray %1$d / %2$d (%3$d%%)</string>
     <string name="no_api_key_demo">No Maps key in build — tiles may be blank; demo terrain still works. Using FieldOps-style GOOGLE_MAPS_API_KEY / secrets.properties when present.</string>

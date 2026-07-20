@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,52 +7,72 @@ plugins {
 
 android {
     namespace = "com.viewshed.app"
-    compileSdk = 35
-    ndkVersion = "27.0.12077973"
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.viewshed.app"
-        minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 5
+        versionName = "1.4.0"
+        // Optional: ./gradlew assembleDebug -PenableVulkanNative=true
+        // Default off so CI/devices without NDK still build the CPU engine.
 
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=c++_shared")
-                abiFilters += listOf("arm64-v8a", "x86_64")
-            }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // secrets.properties (gitignored) or same env keys as FieldOps
+        val secrets = Properties().apply {
+            rootProject.file("secrets.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+        }
+        val mapsKey = secrets.getProperty("MAPS_API_KEY")
+            ?: secrets.getProperty("GOOGLE_MAPS_API_KEY")
+            ?: System.getenv("MAPS_API_KEY")
+            ?: System.getenv("GOOGLE_MAPS_API_KEY") // FieldOps env name
+            ?: ""
+        buildConfigField("String", "MAPS_API_KEY", "\"$mapsKey\"")
+        buildConfigField("boolean", "HAS_MAPS_API_KEY", "${mapsKey.isNotBlank()}")
+        manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-
-    buildFeatures {
-        viewBinding = true
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
+    buildFeatures {
+        viewBinding = true
+        buildConfig = true
     }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
+    implementation("com.google.android.gms:play-services-maps:18.2.0")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }

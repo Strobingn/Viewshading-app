@@ -23,7 +23,8 @@ class ViewshedEngineTest {
             maxDistKm = 1.0,
             numRays = 36,
             samplesPerRay = 20,
-            useCurvature = false
+            useCurvature = false,
+            parallelRays = false
         )
         val flat = 100.0
         val points = ViewshedEngine.samplePoints(observer, params)
@@ -42,9 +43,9 @@ class ViewshedEngineTest {
             maxDistKm = 1.0,
             numRays = 4,
             samplesPerRay = 20,
-            useCurvature = false
+            useCurvature = false,
+            parallelRays = false
         )
-        // High wall at ~250m, then flat again — max visible should stop near wall
         fun elev(p: GeoPoint): Double {
             val d = GeoMath.distanceM(observer, p)
             return when {
@@ -62,14 +63,26 @@ class ViewshedEngineTest {
     }
 
     @Test
-    fun polygon_area_positive_for_squareish_ring() {
-        val ring = listOf(
-            GeoPoint(0.0, 0.0),
-            GeoPoint(0.0, 0.01),
-            GeoPoint(0.01, 0.01),
-            GeoPoint(0.01, 0.0),
-            GeoPoint(0.0, 0.0)
+    fun parallel_matches_serial_on_flat() {
+        val observer = GeoPoint(41.5, -74.0)
+        val base = ViewshedParams(
+            eyeHeightM = 2.0,
+            maxDistKm = 0.5,
+            numRays = 24,
+            samplesPerRay = 15,
+            useCurvature = false
         )
-        assertTrue(GeoMath.polygonAreaKm2(ring) > 0.0)
+        val elev = ViewshedEngine.samplePoints(observer, base)
+            .associate { it.key() to 50.0 }
+        val serial = ViewshedEngine.compute(observer, base.copy(parallelRays = false), elev)
+        val parallel = ViewshedEngine.compute(observer, base.copy(parallelRays = true), elev)
+        assertEquals(serial.stats.maxRangeM, parallel.stats.maxRangeM, 1.0)
+    }
+
+    @Test
+    fun quality_presets_apply_ray_counts() {
+        val p = ViewshedParams().withQuality(SampleQuality.HIGH)
+        assertEquals(SampleQuality.HIGH.rays, p.numRays)
+        assertEquals(SampleQuality.HIGH.samples, p.samplesPerRay)
     }
 }

@@ -141,7 +141,7 @@ static void initVulkan() {
 }
 
 extern "C" JNIEXPORT jfloatArray JNICALL
-Java_com_viewshed_app_viewshed_ViewshedEngine_nativeVulkanCompute(
+Java_com_viewshed_app_viewshed_VulkanViewshed_nativeVulkanCompute(
     JNIEnv* env, jobject,
     jfloat observerLat, jfloat observerLon, jfloat observerHeight,
     jint numRays, jint samplesPerRay, jfloat maxDist) {
