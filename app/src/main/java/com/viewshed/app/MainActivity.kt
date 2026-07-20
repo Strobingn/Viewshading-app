@@ -775,11 +775,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun setupCloudBackend() {
         val prefs = getSharedPreferences("viewshed_prefs", MODE_PRIVATE)
-        val saved = prefs.getString("backend_url", null)
-        if (!saved.isNullOrBlank()) {
-            binding.etBackendUrl.setText(saved)
+        val defaultUrl = getString(R.string.backend_url_default)
+        val saved = prefs.getString("backend_url", defaultUrl)
+        binding.etBackendUrl.setText(
+            if (!saved.isNullOrBlank()) saved else defaultUrl,
+        )
+        // Default ON so Oracle host is used out of the box; user can disable.
+        binding.switchCloudBackend.isChecked = prefs.getBoolean("use_cloud_backend", true)
+        if (!prefs.contains("backend_url")) {
+            prefs.edit()
+                .putString("backend_url", defaultUrl)
+                .putBoolean("use_cloud_backend", true)
+                .apply()
         }
-        binding.switchCloudBackend.isChecked = prefs.getBoolean("use_cloud_backend", false)
         binding.btnTestBackend.setOnClickListener {
             val url =
                 BackendViewshedClient.normalizeUrl(

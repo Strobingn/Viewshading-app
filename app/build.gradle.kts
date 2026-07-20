@@ -13,8 +13,10 @@ android {
         applicationId = "com.viewshed.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.6.0"
+        versionCode = 10
+        versionName = "1.6.1"
+        // Oracle Cloud shared backend (Viewshade + Find It)
+        buildConfigField("String", "DEFAULT_BACKEND_URL", "\"http://129.80.174.236:8000\"")
         // Optional: ./gradlew assembleDebug -PenableVulkanNative=true
         // Default off so CI/devices without NDK still build the CPU engine.
 

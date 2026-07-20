@@ -93,7 +93,7 @@
     <string name="btn_demo_dem">Demo DEM grid</string>
     <string name="use_cloud_backend">Use Oracle / cloud backend</string>
     <string name="backend_url_hint">Backend URL (http://IP:8000)</string>
-    <string name="backend_url_default">http://</string>
+    <string name="backend_url_default">http://129.80.174.236:8000</string>
     <string name="btn_test_backend">Test backend</string>
     <string name="btn_intervis">Intervis</string>
     <string name="btn_cumulative">Cumulative</string>
