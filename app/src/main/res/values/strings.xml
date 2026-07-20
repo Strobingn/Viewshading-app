@@ -91,6 +91,10 @@
     <string name="terrain_loaded">Terrain: %1$s · %2$d×%3$d · elev %4$.0f–%5$.0f m</string>
     <string name="btn_load_dem">Load DEM…</string>
     <string name="btn_demo_dem">Demo DEM grid</string>
+    <string name="use_cloud_backend">Use Oracle / cloud backend</string>
+    <string name="backend_url_hint">Backend URL (http://IP:8000)</string>
+    <string name="backend_url_default">http://</string>
+    <string name="btn_test_backend">Test backend</string>
     <string name="btn_intervis">Intervis</string>
     <string name="btn_cumulative">Cumulative</string>
     <string name="btn_frequency">Frequency</string>

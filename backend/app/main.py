@@ -8,11 +8,20 @@ from typing import Optional
 
 from .models import ViewshedRequest, ViewshedResponse, Observer
 from .viewshed import compute_viewshed
+from .terrain_api import (
+    ElevationSampleRequest,
+    TerrainAnalyzeRequest,
+    analyze_terrain,
+    sample_elevations,
+)
 
 app = FastAPI(
-    title="Viewshed Backend",
-    description="Heavy DEM / high-res viewshed processing for the Viewshading Android app",
-    version="0.1.0",
+    title="Viewshade Shared Backend",
+    description=(
+        "Heavy DEM / viewshed for Viewshade + terrain analysis for Find It (metal). "
+        "Same Oracle Cloud host serves both Android apps."
+    ),
+    version="0.2.0",
 )
 
 app.add_middleware(
@@ -29,19 +38,34 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @app.get("/")
 def root():
     return {
-        "service": "viewshed-backend",
+        "service": "viewshade-shared-backend",
         "status": "ok",
+        "clients": ["viewshade", "find-it"],
         "endpoints": {
-            "POST /viewshed": "JSON body with observer + params (uses demo terrain)",
-            "POST /viewshed/upload": "multipart form with DEM file + observer params",
             "GET /health": "health check",
+            "POST /viewshed": "Viewshade: LOS polygon (demo terrain)",
+            "POST /viewshed/upload": "Viewshade: DEM upload + viewshed",
+            "POST /elevation/sample": "Both: lat/lon → elevation_m[]",
+            "POST /terrain/analyze": "Find It: hillshade / SVF / disturbance grid",
         },
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    return {"status": "healthy", "service": "viewshade-shared-backend", "version": "0.2.0"}
+
+
+@app.post("/elevation/sample")
+def elevation_sample(req: ElevationSampleRequest):
+    """Shared elevation sampling (Viewshade rays or Find It geotags)."""
+    return sample_elevations(req)
+
+
+@app.post("/terrain/analyze")
+def terrain_analyze(req: TerrainAnalyzeRequest):
+    """Find It metal: relief products for ground-feature hunting."""
+    return analyze_terrain(req)
 
 
 @app.post("/viewshed", response_model=ViewshedResponse)

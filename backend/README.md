@@ -32,7 +32,15 @@ $body = '{"observer":{"lat":41.503,"lon":-74.010,"height_m":1.6},"max_distance_m
 Invoke-RestMethod http://127.0.0.1:8000/viewshed -Method POST -Body $body -ContentType "application/json"
 ```
 
-## Endpoints
+## Endpoints (shared by Viewshade + Find It)
+
+| Method | Path | Client |
+|--------|------|--------|
+| GET | `/health` | both |
+| POST | `/viewshed` | **Viewshade** LOS polygon |
+| POST | `/viewshed/upload` | **Viewshade** + DEM file |
+| POST | `/elevation/sample` | **both** — `points[{lat,lon}]` → elevations |
+| POST | `/terrain/analyze` | **Find It** — hillshade / SVF / disturbance grid |
 
 ### `POST /viewshed`
 JSON body:
@@ -49,6 +57,22 @@ JSON body:
 ```
 
 Returns a GeoJSON FeatureCollection with the visible polygon.
+
+### `POST /elevation/sample`
+```json
+{ "points": [ { "lat": 41.503, "lon": -74.01 }, { "lat": 41.504, "lon": -74.02 } ] }
+```
+
+### `POST /terrain/analyze`
+```json
+{
+  "center_lat": 41.503,
+  "center_lon": -74.01,
+  "half_size_m": 500,
+  "cell_size_m": 20,
+  "mode": "all"
+}
+```
 
 ### `POST /viewshed/upload`
 Multipart form:

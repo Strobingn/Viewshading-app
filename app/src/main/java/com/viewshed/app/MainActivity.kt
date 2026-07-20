@@ -59,6 +59,7 @@ import com.viewshed.app.viewshed.PhotoGeotagHelper
 import com.viewshed.app.viewshed.ProfessionalAnalysis
 import com.viewshed.app.viewshed.SampleQuality
 import com.viewshed.app.viewshed.SessionHistory
+import com.viewshed.app.viewshed.BackendViewshedClient
 import com.viewshed.app.viewshed.ViewshedEngine
 import com.viewshed.app.viewshed.ViewshedParams
 import com.viewshed.app.viewshed.ViewshedResult
@@ -313,6 +314,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         setupFieldTools()
         setupProAnalysis()
         setupTerrainEngine()
+        setupCloudBackend()
 
         // Prefer real elevation when Maps key is baked in
         binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
@@ -771,6 +773,49 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         quality = selectedQuality()
     ).sanitized()
 
+    private fun setupCloudBackend() {
+        val prefs = getSharedPreferences("viewshed_prefs", MODE_PRIVATE)
+        val saved = prefs.getString("backend_url", null)
+        if (!saved.isNullOrBlank()) {
+            binding.etBackendUrl.setText(saved)
+        }
+        binding.switchCloudBackend.isChecked = prefs.getBoolean("use_cloud_backend", false)
+        binding.btnTestBackend.setOnClickListener {
+            val url =
+                BackendViewshedClient.normalizeUrl(
+                    binding.etBackendUrl.text?.toString().orEmpty(),
+                )
+            if (url.length < 10) {
+                toast("Enter backend URL like http://YOUR_IP:8000")
+                return@setOnClickListener
+            }
+            lifecycleScope.launch {
+                try {
+                    val ok = BackendViewshedClient(url).health()
+                    if (ok) {
+                        prefs.edit()
+                            .putString("backend_url", url)
+                            .putBoolean("use_cloud_backend", true)
+                            .apply()
+                        binding.switchCloudBackend.isChecked = true
+                        binding.etBackendUrl.setText(url)
+                        toast("Backend OK: $url")
+                    } else {
+                        toast("Backend health failed")
+                    }
+                } catch (e: Exception) {
+                    toast("Backend unreachable: ${e.message}")
+                }
+            }
+        }
+        binding.switchCloudBackend.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean("use_cloud_backend", checked).apply()
+            binding.etBackendUrl.text?.toString()?.let {
+                prefs.edit().putString("backend_url", BackendViewshedClient.normalizeUrl(it)).apply()
+            }
+        }
+    }
+
     private fun runCalculation() {
         if (observers.isEmpty()) {
             toast("Long-press the map to place an observer first.")
@@ -787,6 +832,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val params = readParams()
                 val multi = binding.switchMultiObserver.isChecked
                 val targets = if (multi) observers.toList() else listOf(observers.last())
+                val useCloud = binding.switchCloudBackend.isChecked
+                val backendUrl =
+                    BackendViewshedClient.normalizeUrl(
+                        binding.etBackendUrl.text?.toString().orEmpty(),
+                    )
 
                 // Always redraw this run's polygons (avoid stacking duplicates)
                 polygons.forEach { it.remove() }
@@ -798,39 +848,50 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     binding.tvProgress.visibility = View.VISIBLE
                     binding.tvProgress.text = "Observer ${index + 1}/${targets.size}…"
 
-                    val samples = ViewshedEngine.samplePoints(observer, params)
                     val t0 = android.os.SystemClock.elapsedRealtime()
-                    val elev = withContext(Dispatchers.IO) {
-                        elevationRepo.resolveElevations(
-                            points = samples,
-                            useDemo = params.useDemoTerrain,
-                            offline = offlineCache,
-                            offlineOnly = binding.switchOfflineOnly.isChecked,
-                            source = selectedElevSource()
-                        )
-                    }
-                    val result = ViewshedEngine.compute(
-                        observer = observer,
-                        params = params,
-                        elevations = elev,
-                        onRayProgress = { done, total ->
-                            withContext(Dispatchers.Main.immediate) {
-                                val pct = (100.0 * done / total).toInt()
-                                binding.progressBar.progress = pct
-                                binding.tvProgress.text = getString(
-                                    R.string.progress_format,
-                                    done,
-                                    total,
-                                    pct
+                    val result =
+                        if (useCloud && backendUrl.length >= 10) {
+                            binding.tvProgress.text = "Cloud backend…"
+                            binding.progressBar.isIndeterminate = true
+                            try {
+                                BackendViewshedClient(backendUrl).compute(observer, params)
+                            } finally {
+                                binding.progressBar.isIndeterminate = false
+                            }
+                        } else {
+                            val samples = ViewshedEngine.samplePoints(observer, params)
+                            val elev = withContext(Dispatchers.IO) {
+                                elevationRepo.resolveElevations(
+                                    points = samples,
+                                    useDemo = params.useDemoTerrain,
+                                    offline = offlineCache,
+                                    offlineOnly = binding.switchOfflineOnly.isChecked,
+                                    source = selectedElevSource()
                                 )
                             }
+                            ViewshedEngine.compute(
+                                observer = observer,
+                                params = params,
+                                elevations = elev,
+                                onRayProgress = { done, total ->
+                                    withContext(Dispatchers.Main.immediate) {
+                                        val pct = (100.0 * done / total).toInt()
+                                        binding.progressBar.progress = pct
+                                        binding.tvProgress.text = getString(
+                                            R.string.progress_format,
+                                            done,
+                                            total,
+                                            pct
+                                        )
+                                    }
+                                }
+                            )
                         }
-                    )
                     PerformanceMonitor.record(
                         "viewshed",
                         android.os.SystemClock.elapsedRealtime() - t0,
                         rayCount = params.numRays,
-                        sampleCount = samples.size
+                        sampleCount = result.rangesM.size
                     )
                     newResults.add(result)
                     if (::map.isInitialized) drawResult(result, index)
