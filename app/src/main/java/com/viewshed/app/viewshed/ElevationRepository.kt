@@ -19,37 +19,36 @@ import java.util.concurrent.TimeUnit
 
 class ElevationDataException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
 
-/** Elevation source supporting local DEM, synthetic demo terrain, or Google Elevation. */
 class ElevationRepository {
     @Volatile private var localDem: DemSource? = null
     private val memoryCache = ConcurrentHashMap<String, CacheEntry>()
 
     private val service: ElevationService by lazy {
-        Retrofit.Builder()
-            .baseUrl("https://maps.googleapis.com/maps/api/")
+        Retrofit.Builder().baseUrl("https://maps.googleapis.com/maps/api/")
             .addConverterFactory(GsonConverterFactory.create())
             .client(OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build())
             .build().create(ElevationService::class.java)
     }
 
-    fun setLocalDem(source: DemSource?) {
-        localDem = source
-    }
-
+    fun setLocalDem(source: DemSource?) { localDem = source }
     fun hasLocalDem(): Boolean = localDem != null
 
     suspend fun resolveElevations(points: List<GeoPoint>, useDemo: Boolean): ElevationGrid {
-        val dem = localDem
-        if (dem != null) {
-            val values = HashMap<String, Double>(points.size)
-            for (point in points.distinctBy { it.key() }) {
-                values[point.key()] = dem.elevation(point)
-                    ?: throw ElevationDataException("Selected DEM does not cover %.6f, %.6f".format(Locale.US, point.lat, point.lon))
+        localDem?.let { dem ->
+            val values = points.distinctBy { it.key() }.associate { point ->
+                point.key() to (dem.elevation(point) ?: throw ElevationDataException(
+                    "Selected DEM does not cover %.6f, %.6f".format(Locale.US, point.lat, point.lon)
+                ))
             }
-            return ElevationGrid(values, useDemo = false, sourceName = "Local DEM")
+            return ElevationGrid(values, false, "Local DEM", dem::elevation)
         }
         if (useDemo) {
-            return ElevationGrid(points.associate { it.key() to DemoTerrain.elevation(it) }, true, "Demo terrain")
+            return ElevationGrid(
+                points.associate { it.key() to DemoTerrain.elevation(it) },
+                true,
+                "Demo terrain",
+                { DemoTerrain.elevation(it) }
+            )
         }
         return ElevationGrid(fetchElevationsBatched(points), false, "Google Elevation")
     }
@@ -66,10 +65,8 @@ class ElevationRepository {
         val semaphore = Semaphore(MAX_CONCURRENT_BATCHES)
         coroutineScope {
             missing.chunked(BATCH_SIZE).map { chunk ->
-                async(Dispatchers.IO) {
-                    semaphore.withPermit { fetchChunk(chunk, apiKey) }
-                }
-            }.awaitAll().forEach { batch -> result.putAll(batch) }
+                async(Dispatchers.IO) { semaphore.withPermit { fetchChunk(chunk, apiKey) } }
+            }.awaitAll().forEach(result::putAll)
         }
         unique.firstOrNull { it.key() !in result }?.let {
             throw ElevationDataException("Real elevation is missing near %.6f, %.6f".format(Locale.US, it.lat, it.lon))
@@ -79,17 +76,10 @@ class ElevationRepository {
 
     private suspend fun fetchChunk(chunk: List<GeoPoint>, apiKey: String): Map<String, Double> {
         val locations = chunk.joinToString("|") { String.format(Locale.US, "%.7f,%.7f", it.lat, it.lon) }
-        val response = try {
-            withContext(Dispatchers.IO) { service.getElevation(locations, apiKey) }
-        } catch (error: Exception) {
-            throw ElevationDataException("Real elevation download failed.", error)
-        }
-        if (response.status != "OK") {
-            throw ElevationDataException("Elevation API rejected the request: ${response.errorMessage ?: response.status}")
-        }
-        if (response.results.size != chunk.size) {
-            throw ElevationDataException("Elevation API returned ${response.results.size} of ${chunk.size} points")
-        }
+        val response = try { withContext(Dispatchers.IO) { service.getElevation(locations, apiKey) } }
+        catch (error: Exception) { throw ElevationDataException("Real elevation download failed.", error) }
+        if (response.status != "OK") throw ElevationDataException("Elevation API rejected the request: ${response.errorMessage ?: response.status}")
+        if (response.results.size != chunk.size) throw ElevationDataException("Elevation API returned ${response.results.size} of ${chunk.size} points")
         return chunk.indices.associate { index ->
             val key = chunk[index].key()
             val value = response.results[index].elevation
@@ -104,15 +94,9 @@ class ElevationRepository {
     }
 
     private interface ElevationService {
-        @GET("elevation/json")
-        suspend fun getElevation(@Query("locations") locations: String, @Query("key") key: String): ElevationResponse
+        @GET("elevation/json") suspend fun getElevation(@Query("locations") locations: String, @Query("key") key: String): ElevationResponse
     }
-
-    private data class ElevationResponse(
-        val status: String,
-        val results: List<ElevationResult> = emptyList(),
-        @com.google.gson.annotations.SerializedName("error_message") val errorMessage: String? = null
-    )
+    private data class ElevationResponse(val status: String, val results: List<ElevationResult> = emptyList(), @com.google.gson.annotations.SerializedName("error_message") val errorMessage: String? = null)
     private data class ElevationResult(val elevation: Double, val resolution: Double? = null)
     private data class CacheEntry(val elevation: Double, val timestamp: Long)
 
@@ -126,11 +110,14 @@ class ElevationRepository {
 class ElevationGrid(
     private val byKey: Map<String, Double>,
     val useDemo: Boolean,
-    val sourceName: String = if (useDemo) "Demo terrain" else "Elevation data"
+    val sourceName: String = if (useDemo) "Demo terrain" else "Elevation data",
+    private val randomAccess: ((GeoPoint) -> Double?)? = null
 ) {
-    fun elevation(point: GeoPoint): Double {
-        byKey[point.key()]?.let { return it }
-        if (useDemo) return DemoTerrain.elevation(point)
-        throw ElevationDataException("Elevation is missing near %.6f, %.6f".format(Locale.US, point.lat, point.lon))
-    }
+    val supportsAdaptiveSampling: Boolean get() = randomAccess != null
+
+    fun tryElevation(point: GeoPoint): Double? = byKey[point.key()] ?: randomAccess?.invoke(point)
+
+    fun elevation(point: GeoPoint): Double = tryElevation(point)
+        ?: if (useDemo) DemoTerrain.elevation(point)
+        else throw ElevationDataException("Elevation is missing near %.6f, %.6f".format(Locale.US, point.lat, point.lon))
 }
