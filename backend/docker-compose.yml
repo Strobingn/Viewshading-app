@@ -1,0 +1,11 @@
+services:
+  viewshed-backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data          # optional: drop DEM files here
+      - ./uploads:/app/uploads    # uploaded DEMs land here
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
