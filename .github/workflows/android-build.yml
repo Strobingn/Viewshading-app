@@ -1,38 +1,75 @@
-name: Build Android Debug APK (Viewshading-app)
-
-# Boss: Run this from GitHub Actions tab for easy debug APK.
-# 1. Go to repo > Actions tab
-# 2. Select this workflow
-# 3. Click 'Run workflow' (manual trigger)
-# 4. Download APK from Artifacts after green check
+name: Android CI - Viewshading App
 
 on:
   push:
-    branches: ['main']
-  workflow_dispatch:  # Manual button - use this to build without pushing code
+  pull_request:
+    branches: [main, master, grok]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '17'
+          distribution: temurin
+          cache: gradle
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Create secrets.properties
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+        shell: bash
+        run: |
+          printf 'MAPS_API_KEY=%s\n' "${MAPS_API_KEY:-}" > secrets.properties
+          if [ -z "${MAPS_API_KEY}" ]; then
+            echo "WARNING: MAPS_API_KEY secret is empty or not set. Map will not load."
+          else
+            echo "MAPS_API_KEY secret was injected into secrets.properties"
+          fi
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
+
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-app-debug
+          name: viewshading-debug-${{ github.ref_name }}-${{ github.run_number }}
           path: app/build/outputs/apk/debug/*.apk
-          retention-days: 30
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build unsigned Release APK
+        run: ./gradlew assembleRelease --stacktrace --no-daemon
+
+      - name: Upload unsigned Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewshading-release-unsigned-${{ github.ref_name }}-${{ github.run_number }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Clean up secrets
+        if: always()
+        run: rm -f secrets.properties
