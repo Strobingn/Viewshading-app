@@ -1,23 +1,26 @@
 package com.viewshed.app.viewshed
 
 /**
- * Calculates horizon line points for visual display on map.
- * Reuses ViewshedEngine logic for accuracy.
+ * Horizon ring for map display — outer boundary of a high-resolution viewshed.
  */
 object HorizonLineCalculator {
 
-    suspend fun calculateHorizonLine(
+    suspend fun calculate(
         observer: GeoPoint,
-        rays: Int = 360,
-        maxDistanceM: Double = 20000.0
+        elevations: ElevationGrid,
+        maxDistKm: Double = 10.0,
+        quality: SampleQuality = SampleQuality.HIGH
     ): List<GeoPoint> {
-        val result = ViewshedEngine.computeViewshed(
-            observer = observer,
-            maxDistanceM = maxDistanceM,
-            quality = ViewshedEngine.Quality.MED,
-            useAdaptiveSampling = true
-        )
-        // Take the outer visible points as horizon approximation
-        return result.visiblePoints.take(rays)
+        val params = ViewshedParams(
+            maxDistKm = maxDistKm,
+            quality = quality,
+            adaptiveSampling = true,
+            binarySearchHorizon = true,
+            parallelRays = true,
+            useDemoTerrain = elevations.useDemo
+        ).withQuality(quality)
+        val result = ViewshedEngine.compute(observer, params, elevations)
+        val ring = result.boundary
+        return if (ring.size > 1 && ring.first() == ring.last()) ring.dropLast(1) else ring
     }
 }

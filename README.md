@@ -2,6 +2,8 @@
 
 **Full native Android app with Google Maps integration for viewshed analysis.**
 
+For agents and terminal workflows (Android CLI, build/deploy, skills), see **[AGENTS.md](./AGENTS.md)** and `scripts/android-cli-*.ps1`.
+
 - Place observer point on Google Map (long press or search).
 - Configure observer height (eye level), max distance, ray resolution.
 - Computes line-of-sight (LOS) viewshed using radial ray marching.

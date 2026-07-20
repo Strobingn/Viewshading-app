@@ -8,11 +8,13 @@ import android.location.Location
 import android.os.Build
 import android.os.Bundle
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -41,12 +43,20 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import com.viewshed.app.databinding.ActivityMainBinding
 import com.viewshed.app.viewshed.AnalysisPreset
+import com.viewshed.app.viewshed.AnalysisSession
+import com.viewshed.app.viewshed.AnalysisSessionManager
 import com.viewshed.app.viewshed.ElevationRepository
+import com.viewshed.app.viewshed.FieldNotesManager
 import com.viewshed.app.viewshed.GeoExport
 import com.viewshed.app.viewshed.GeoPoint
+import com.viewshed.app.viewshed.MeasurementTool
+import com.viewshed.app.viewshed.OfflineMapCache
+import com.viewshed.app.viewshed.SampleQuality
 import com.viewshed.app.viewshed.ViewshedEngine
 import com.viewshed.app.viewshed.ViewshedParams
 import com.viewshed.app.viewshed.ViewshedResult
+import com.viewshed.app.viewshed.VoiceMemoHelper
+import com.viewshed.app.viewshed.VulkanViewshed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -68,14 +78,22 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var bottomSheetBehavior: BottomSheetBehavior<*>
 
     private val elevationRepo = ElevationRepository()
+    private lateinit var offlineCache: OfflineMapCache
+    private lateinit var notesManager: FieldNotesManager
+    private lateinit var voiceMemos: VoiceMemoHelper
+
     private val observers = mutableListOf<GeoPoint>()
     private val markers = mutableListOf<Marker>()
     private val polygons = mutableListOf<Polygon>()
     private val results = mutableListOf<ViewshedResult>()
+    private val noteMarkers = mutableListOf<Marker>()
+    private val memoMarkers = mutableListOf<Marker>()
 
     private var calcJob: Job? = null
     /** Prevents slider ↔ text feedback loops while editing viewer height. */
     private var syncingHeight = false
+    private var measureA: GeoPoint? = null
+    private var measureLineMarker: Marker? = null
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -83,11 +101,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         ) {
-            enableMyLocation()
+            if (::map.isInitialized) enableMyLocation(centerIfAvailable = true)
         } else {
             toast("Location denied — Newburgh NY default.")
-            moveToDefaultLocation()
         }
+    }
+
+    private val audioPermissionRequest = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) toggleVoiceMemo() else toast("Microphone permission required for voice memos.")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -96,6 +119,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        offlineCache = OfflineMapCache(this)
+        notesManager = FieldNotesManager(this)
+        voiceMemos = VoiceMemoHelper(this)
 
         // Initialize Maps before fragment async callback (avoids some tablet cold-start blanks)
         try {
@@ -112,6 +139,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mapFragment.getMapAsync(this)
 
         setupUi()
+        refreshOfflineStatus()
+    }
+
+    override fun onDestroy() {
+        voiceMemos.release()
+        super.onDestroy()
     }
 
     /**
@@ -119,37 +152,50 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
      * Peek height = measured height of handle → action buttons (not the scroll extras).
      */
     private fun setupBottomSheetInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(binding.bottomSheet) { view, insets ->
+        bottomSheetBehavior.isFitToContents = false
+        bottomSheetBehavior.skipCollapsed = false
+        bottomSheetBehavior.isHideable = false
+        bottomSheetBehavior.halfExpandedRatio = 0.55f
+        bottomSheetBehavior.state = BottomSheetBehavior.STATE_COLLAPSED
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.rootCoordinator) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.updatePadding(bottom = bars.bottom)
-            ViewCompat.setOnApplyWindowInsetsListener(binding.topBar) { top, topInsets ->
-                val t = topInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-                val lp = top.layoutParams as ViewGroup.MarginLayoutParams
-                lp.topMargin = t.top + (12 * resources.displayMetrics.density).toInt()
-                top.layoutParams = lp
-                topInsets
-            }
+            binding.bottomSheet.updatePadding(bottom = bars.bottom)
+            val topLp = binding.topBar.layoutParams as ViewGroup.MarginLayoutParams
+            topLp.topMargin = bars.top + (12 * resources.displayMetrics.density).toInt()
+            binding.topBar.layoutParams = topLp
             insets
         }
 
-        binding.bottomSheet.post {
-            updatePeekToActionButtons()
-        }
+        binding.bottomSheet.post { updatePeekToActionButtons() }
         binding.actionButtons.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updatePeekToActionButtons()
         }
+        bottomSheetBehavior.addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
+            override fun onStateChanged(bottomSheet: View, newState: Int) = Unit
+            override fun onSlide(bottomSheet: View, slideOffset: Float) {
+                positionFabs(bottomSheetBehavior.peekHeight)
+            }
+        })
     }
 
     private fun updatePeekToActionButtons() {
         if (!::bottomSheetBehavior.isInitialized) return
         val actions = binding.actionButtons
-        // Distance from top of sheet to bottom of primary buttons
         val peek = actions.bottom + binding.bottomSheet.paddingBottom +
             (8 * resources.displayMetrics.density).toInt()
         if (peek > 0) {
             bottomSheetBehavior.peekHeight = peek
-            bottomSheetBehavior.isFitToContents = true
+            bottomSheetBehavior.isFitToContents = false
+            positionFabs(peek)
         }
+    }
+
+    private fun positionFabs(peekPx: Int) {
+        val lp = binding.fabColumn.layoutParams as ViewGroup.MarginLayoutParams
+        val gap = (12 * resources.displayMetrics.density).toInt()
+        lp.bottomMargin = peekPx + gap
+        binding.fabColumn.layoutParams = lp
     }
 
     private fun setupUi() {
@@ -186,14 +232,77 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnSettings.setOnClickListener { showSettingsDialog() }
 
         setupViewerHeightControls()
+        setupQualityAndExperimental()
+        setupFieldTools()
 
         // Prefer real elevation when Maps key is baked in
         binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
         if (!BuildConfig.HAS_MAPS_API_KEY) {
             Log.w(TAG, getString(R.string.no_api_key_demo))
         }
+        // Probe optional native path once (never required)
+        lifecycleScope.launch(Dispatchers.IO) {
+            val ok = VulkanViewshed.isAvailable()
+            Log.i(TAG, "Vulkan experimental available=$ok")
+        }
 
         setExportEnabled(false)
+    }
+
+    private fun setupFieldTools() {
+        binding.btnCacheOffline.setOnClickListener { cacheOfflinePack() }
+        binding.btnManageOffline.setOnClickListener { showManageOfflineDialog() }
+        binding.btnAddNote.setOnClickListener { promptAddNote() }
+        binding.btnListNotes.setOnClickListener { showNotesList() }
+        binding.btnVoiceMemo.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                toggleVoiceMemo()
+            } else {
+                audioPermissionRequest.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+        binding.btnListMemos.setOnClickListener { showMemosList() }
+        binding.switchMeasureMode.setOnCheckedChangeListener { _, checked ->
+            measureA = null
+            measureLineMarker?.remove()
+            measureLineMarker = null
+            binding.tvMeasureResult.visibility = if (checked) View.VISIBLE else View.GONE
+            if (checked) {
+                binding.tvMeasureResult.text = "Measure: tap two points on the map"
+                toast("Measure mode: tap map twice for distance")
+            }
+        }
+        binding.switchOfflineOnly.setOnCheckedChangeListener { _, checked ->
+            if (checked && offlineCache.listPacks().isEmpty()) {
+                toast("Cache an offline pack first.")
+                binding.switchOfflineOnly.isChecked = false
+            }
+        }
+    }
+
+    private fun setupQualityAndExperimental() {
+        binding.chipQualityLow.setOnClickListener { applyQuality(SampleQuality.LOW) }
+        binding.chipQualityMed.setOnClickListener { applyQuality(SampleQuality.MEDIUM) }
+        binding.chipQualityHigh.setOnClickListener { applyQuality(SampleQuality.HIGH) }
+    }
+
+    private fun applyQuality(q: SampleQuality) {
+        binding.etNumRays.setText(q.rays.toString())
+        binding.etSampleSteps.setText(q.samples.toString())
+        when (q) {
+            SampleQuality.LOW -> binding.chipQualityLow.isChecked = true
+            SampleQuality.MEDIUM -> binding.chipQualityMed.isChecked = true
+            SampleQuality.HIGH -> binding.chipQualityHigh.isChecked = true
+        }
+        toast("${q.label}: ${q.rays} rays × ${q.samples} samples")
+    }
+
+    private fun selectedQuality(): SampleQuality = when {
+        binding.chipQualityLow.isChecked -> SampleQuality.LOW
+        binding.chipQualityHigh.isChecked -> SampleQuality.HIGH
+        else -> SampleQuality.MEDIUM
     }
 
     private fun showSettingsDialog() {
@@ -231,7 +340,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         binding.sliderViewerHeight.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             if (!fromUser || syncingHeight) return@addOnChangeListener
-            setViewerHeightM(value.toDouble(), fromUser = true, source = HeightSource.SLIDER)
+            // Slider is in centimetres (0–1000)
+            setViewerHeightM(value / 10.0, fromUser = true, source = HeightSource.SLIDER)
         }
 
         binding.btnHeightMinus.setOnClickListener {
@@ -262,7 +372,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun currentViewerHeightM(): Double =
         binding.etObserverHeight.text?.toString()?.toDoubleOrNull()
-            ?: binding.sliderViewerHeight.value.toDouble()
+            ?: (binding.sliderViewerHeight.value / 10.0).toDouble()
 
     private fun setViewerHeightM(
         meters: Double,
@@ -286,12 +396,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
             }
             if (source != HeightSource.SLIDER) {
-                val sliderVal = rounded.toFloat().coerceIn(
+                val cm = (rounded * 10.0).roundToInt().toFloat().coerceIn(
                     binding.sliderViewerHeight.valueFrom,
                     binding.sliderViewerHeight.valueTo
                 )
-                if (kotlin.math.abs(binding.sliderViewerHeight.value - sliderVal) > 0.05f) {
-                    binding.sliderViewerHeight.value = sliderVal
+                if (kotlin.math.abs(binding.sliderViewerHeight.value - cm) >= 0.5f) {
+                    binding.sliderViewerHeight.value = cm
                 }
             }
             updateHeightQuickChips(rounded)
@@ -327,18 +437,46 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         map.uiSettings.isZoomControlsEnabled = true
         map.uiSettings.isMyLocationButtonEnabled = false
         map.uiSettings.isCompassEnabled = true
+        map.uiSettings.isMapToolbarEnabled = false
+
+        map.setOnMapClickListener { latLng ->
+            if (binding.switchMeasureMode.isChecked) {
+                handleMeasureTap(GeoPoint(latLng.latitude, latLng.longitude))
+            }
+        }
 
         map.setOnMapLongClickListener { latLng ->
+            if (binding.switchMeasureMode.isChecked) {
+                handleMeasureTap(GeoPoint(latLng.latitude, latLng.longitude))
+                return@setOnMapLongClickListener
+            }
             placeObserver(
                 GeoPoint(latLng.latitude, latLng.longitude),
                 clearOthers = !binding.switchMultiObserver.isChecked
             )
         }
 
+        map.setOnMarkerClickListener { marker ->
+            val noteId = marker.tag as? String
+            if (noteId != null && noteId.startsWith("note:")) {
+                showNoteDetail(noteId.removePrefix("note:"))
+                true
+            } else if (noteId != null && noteId.startsWith("memo:")) {
+                playMemoById(noteId.removePrefix("memo:"))
+                true
+            } else {
+                false
+            }
+        }
+
+        // Default camera first; GPS may override — never overwrite GPS with Newburgh later.
+        moveToDefaultLocation()
+        refreshFieldMarkers()
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            enableMyLocation()
+            enableMyLocation(centerIfAvailable = true)
         } else {
             locationPermissionRequest.launch(
                 arrayOf(
@@ -347,26 +485,44 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 )
             )
         }
-        moveToDefaultLocation()
     }
 
     private fun moveToDefaultLocation() {
         if (!::map.isInitialized) return
-        map.moveCamera(CameraUpdateFactory.newLatLngZoom(NEWBURGH, 12f))
+        try {
+            map.moveCamera(CameraUpdateFactory.newLatLngZoom(NEWBURGH, 12f))
+        } catch (e: Exception) {
+            Log.w(TAG, "moveCamera failed", e)
+        }
     }
 
-    private fun enableMyLocation() {
+    private fun enableMyLocation(centerIfAvailable: Boolean = true) {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) return
-        map.isMyLocationEnabled = true
-        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-            location?.let {
-                map.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 13f)
-                )
-            }
+        try {
+            map.isMyLocationEnabled = true
+        } catch (e: Exception) {
+            Log.w(TAG, "myLocation", e)
+            return
         }
+        if (!centerIfAvailable) return
+        fusedLocationClient.lastLocation
+            .addOnSuccessListener { location: Location? ->
+                location?.let {
+                    try {
+                        map.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(
+                                LatLng(it.latitude, it.longitude),
+                                13f
+                            )
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "animateCamera", e)
+                    }
+                }
+            }
+            .addOnFailureListener { Log.w(TAG, "lastLocation failed", it) }
     }
 
     private fun placeObserverAtMyLocation() {
@@ -443,12 +599,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         samplesPerRay = binding.etSampleSteps.text?.toString()?.toIntOrNull() ?: 80,
         useDemoTerrain = binding.switchDemoTerrain.isChecked,
         useCurvature = binding.switchCurvature.isChecked,
-        refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13
+        refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13,
+        parallelRays = binding.switchParallel.isChecked,
+        adaptiveSampling = binding.switchAdaptive.isChecked,
+        binarySearchHorizon = binding.switchBinaryHorizon.isChecked,
+        quality = selectedQuality()
     ).sanitized()
 
     private fun runCalculation() {
         if (observers.isEmpty()) {
             toast("Long-press the map to place an observer first.")
+            return
+        }
+        if (!::map.isInitialized) {
+            toast("Map not ready yet.")
             return
         }
         calcJob?.cancel()
@@ -459,11 +623,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val multi = binding.switchMultiObserver.isChecked
                 val targets = if (multi) observers.toList() else listOf(observers.last())
 
-                if (!multi) {
-                    polygons.forEach { it.remove() }
-                    polygons.clear()
-                    results.clear()
-                }
+                // Always redraw this run's polygons (avoid stacking duplicates)
+                polygons.forEach { it.remove() }
+                polygons.clear()
+                results.clear()
 
                 val newResults = mutableListOf<ViewshedResult>()
                 targets.forEachIndexed { index, observer ->
@@ -472,38 +635,50 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                     val samples = ViewshedEngine.samplePoints(observer, params)
                     val elev = withContext(Dispatchers.IO) {
-                        elevationRepo.resolveElevations(samples, params.useDemoTerrain)
-                    }
-                    val result = withContext(Dispatchers.Default) {
-                        ViewshedEngine.compute(
-                            observer = observer,
-                            params = params,
-                            elevations = elev,
-                            onRayProgress = { done, total ->
-                                runOnUiThread {
-                                    val pct = (100.0 * done / total).toInt()
-                                    binding.progressBar.progress = pct
-                                    binding.tvProgress.text = getString(
-                                        R.string.progress_format,
-                                        done,
-                                        total,
-                                        pct
-                                    )
-                                }
-                            }
+                        elevationRepo.resolveElevations(
+                            points = samples,
+                            useDemo = params.useDemoTerrain,
+                            offline = offlineCache,
+                            offlineOnly = binding.switchOfflineOnly.isChecked
                         )
                     }
+                    val result = ViewshedEngine.compute(
+                        observer = observer,
+                        params = params,
+                        elevations = elev,
+                        onRayProgress = { done, total ->
+                            withContext(Dispatchers.Main.immediate) {
+                                val pct = (100.0 * done / total).toInt()
+                                binding.progressBar.progress = pct
+                                binding.tvProgress.text = getString(
+                                    R.string.progress_format,
+                                    done,
+                                    total,
+                                    pct
+                                )
+                            }
+                        }
+                    )
                     newResults.add(result)
-                    drawResult(result, polygons.size)
+                    if (::map.isInitialized) drawResult(result, index)
                 }
 
                 results.addAll(newResults)
                 showStats(results)
                 setExportEnabled(results.any { it.boundary.size >= 3 })
-                toast("Viewshed ready — ${results.size} observer(s).")
+                newResults.lastOrNull()?.let { last ->
+                    try {
+                        val file = java.io.File(filesDir, "last_session.json")
+                        AnalysisSessionManager.save(AnalysisSession.fromResult(last), file)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "session save failed", e)
+                    }
+                }
+                val mode = if (params.useDemoTerrain) "demo" else "elevation API"
+                toast("Viewshed ready — ${results.size} observer(s) · $mode")
             } catch (e: Exception) {
                 Log.e(TAG, "Calculation error", e)
-                toast("Error: ${e.message}. Try demo mode or check API key.")
+                toast("Error: ${e.message ?: e.javaClass.simpleName}")
             } finally {
                 setCalculating(false)
             }
@@ -512,17 +687,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun drawResult(result: ViewshedResult, colorIndex: Int) {
         if (result.boundary.size < 3) return
-        val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
-        val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
-        val poly = map.addPolygon(
-            PolygonOptions()
-                .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
-                .fillColor(fill)
-                .strokeColor(stroke)
-                .strokeWidth(3f)
-                .geodesic(true)
-        )
-        polygons.add(poly)
+        try {
+            val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
+            val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
+            val poly = map.addPolygon(
+                PolygonOptions()
+                    .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
+                    .fillColor(fill)
+                    .strokeColor(stroke)
+                    .strokeWidth(3f)
+                    .geodesic(true)
+            )
+            polygons.add(poly)
+        } catch (e: Exception) {
+            Log.e(TAG, "drawResult", e)
+        }
     }
 
     private fun showStats(list: List<ViewshedResult>) {
@@ -620,6 +799,304 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun toast(msg: String) =
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    // --- Phase 1: Offline elevation packs ---
+
+    private fun refreshOfflineStatus() {
+        if (!::binding.isInitialized || !::offlineCache.isInitialized) return
+        val packs = offlineCache.listPacks()
+        binding.tvOfflineStatus.text = if (packs.isEmpty()) {
+            getString(R.string.offline_status_empty)
+        } else {
+            getString(
+                R.string.offline_status_format,
+                OfflineMapCache.packSummary(packs)
+            )
+        }
+    }
+
+    private fun activeFieldPoint(): GeoPoint {
+        observers.lastOrNull()?.let { return it }
+        if (::map.isInitialized) {
+            val c = map.cameraPosition.target
+            return GeoPoint(c.latitude, c.longitude)
+        }
+        return GeoPoint(NEWBURGH.latitude, NEWBURGH.longitude)
+    }
+
+    private fun cacheOfflinePack() {
+        val center = activeFieldPoint()
+        val radiusKm = binding.etMaxDistance.text?.toString()?.toDoubleOrNull()?.coerceIn(0.5, 15.0)
+            ?: 3.0
+        binding.btnCacheOffline.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                toast("Caching elevations (~${radiusKm} km)…")
+                val pack = withContext(Dispatchers.IO) {
+                    offlineCache.captureArea(
+                        name = "Area ${String.format(Locale.US, "%.3f,%.3f", center.lat, center.lon)}",
+                        center = center,
+                        radiusKm = radiusKm,
+                        gridSteps = 20
+                    ) { points ->
+                        // Force network sample (not demo) when possible; falls back inside repo
+                        elevationRepo.resolveElevations(
+                            points = points,
+                            useDemo = binding.switchDemoTerrain.isChecked,
+                            offline = null,
+                            offlineOnly = false
+                        ).let { grid ->
+                            points.associate { p -> p.key() to grid.elevation(p) }
+                        }
+                    }
+                }
+                refreshOfflineStatus()
+                toast("Offline pack saved: ${pack.sampleCount} samples · ${pack.radiusKm} km")
+            } catch (e: Exception) {
+                Log.e(TAG, "cacheOffline", e)
+                toast("Cache failed: ${e.message}")
+            } finally {
+                binding.btnCacheOffline.isEnabled = true
+            }
+        }
+    }
+
+    private fun showManageOfflineDialog() {
+        val packs = offlineCache.listPacks()
+        if (packs.isEmpty()) {
+            toast("No offline packs yet.")
+            return
+        }
+        val labels = packs.map {
+            "${it.name} · ${it.sampleCount} pts · r=${String.format(Locale.US, "%.1f", it.radiusKm)} km"
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.manage_offline)
+            .setItems(labels) { _, which ->
+                val pack = packs[which]
+                MaterialAlertDialogBuilder(this)
+                    .setTitle(pack.name)
+                    .setMessage(
+                        "Center ${String.format(Locale.US, "%.5f, %.5f", pack.centerLat, pack.centerLon)}\n" +
+                            "${pack.sampleCount} samples · radius ${pack.radiusKm} km"
+                    )
+                    .setPositiveButton(R.string.delete) { _, _ ->
+                        offlineCache.deletePack(pack.id)
+                        if (offlineCache.listPacks().isEmpty()) {
+                            binding.switchOfflineOnly.isChecked = false
+                        }
+                        refreshOfflineStatus()
+                        toast("Pack deleted")
+                    }
+                    .setNegativeButton(R.string.cancel, null)
+                    .show()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    // --- Phase 2: Field notes ---
+
+    private fun promptAddNote() {
+        val point = activeFieldPoint()
+        val input = EditText(this).apply {
+            hint = getString(R.string.note_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            setPadding(48, 32, 48, 32)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.note_title)
+            .setMessage(
+                String.format(Locale.US, "%.5f, %.5f", point.lat, point.lon)
+            )
+            .setView(input)
+            .setPositiveButton(R.string.save) { _, _ ->
+                val text = input.text?.toString().orEmpty()
+                if (text.isBlank()) {
+                    toast("Note is empty.")
+                    return@setPositiveButton
+                }
+                notesManager.add(point, text)
+                refreshFieldMarkers()
+                toast("Note saved")
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showNotesList() {
+        val notes = notesManager.list()
+        if (notes.isEmpty()) {
+            toast("No field notes yet.")
+            return
+        }
+        val labels = notes.map {
+            val preview = it.text.take(48).let { t -> if (it.text.length > 48) "$t…" else t }
+            preview
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.list_field_notes)
+            .setItems(labels) { _, which ->
+                showNoteDetail(notes[which].id)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showNoteDetail(id: String) {
+        val note = notesManager.get(id) ?: return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.note_title)
+            .setMessage(
+                "${note.text}\n\n" +
+                    String.format(Locale.US, "%.5f, %.5f", note.lat, note.lon)
+            )
+            .setPositiveButton("Go") { _, _ ->
+                if (::map.isInitialized) {
+                    map.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(LatLng(note.lat, note.lon), 16f)
+                    )
+                }
+            }
+            .setNeutralButton(R.string.delete) { _, _ ->
+                notesManager.remove(id)
+                refreshFieldMarkers()
+                toast("Note deleted")
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun refreshFieldMarkers() {
+        if (!::map.isInitialized) return
+        noteMarkers.forEach { it.remove() }
+        noteMarkers.clear()
+        memoMarkers.forEach { it.remove() }
+        memoMarkers.clear()
+
+        notesManager.list().forEach { note ->
+            val m = map.addMarker(
+                MarkerOptions()
+                    .position(LatLng(note.lat, note.lon))
+                    .title("Note")
+                    .snippet(note.text.take(60))
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_YELLOW))
+            )
+            m?.tag = "note:${note.id}"
+            m?.let { noteMarkers.add(it) }
+        }
+        voiceMemos.list().forEach { memo ->
+            val m = map.addMarker(
+                MarkerOptions()
+                    .position(LatLng(memo.lat, memo.lon))
+                    .title("Voice memo")
+                    .snippet("Tap to play")
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_MAGENTA))
+            )
+            m?.tag = "memo:${memo.id}"
+            m?.let { memoMarkers.add(it) }
+        }
+    }
+
+    // --- Phase 3: Voice memos ---
+
+    private fun toggleVoiceMemo() {
+        if (voiceMemos.isRecording) {
+            val memo = voiceMemos.stopRecording()
+            binding.btnVoiceMemo.text = getString(R.string.voice_memo_start)
+            if (memo != null) {
+                refreshFieldMarkers()
+                toast("Voice memo saved")
+            } else {
+                toast("Recording failed or too short")
+            }
+        } else {
+            val point = activeFieldPoint()
+            val path = voiceMemos.startRecording(point)
+            if (path == null) {
+                toast("Could not start recorder")
+            } else {
+                binding.btnVoiceMemo.text = getString(R.string.voice_memo_stop)
+                toast("Recording… tap again to stop")
+            }
+        }
+    }
+
+    private fun showMemosList() {
+        val memos = voiceMemos.list()
+        if (memos.isEmpty()) {
+            toast("No voice memos yet.")
+            return
+        }
+        val labels = memos.mapIndexed { i, m ->
+            "#${i + 1} · ${String.format(Locale.US, "%.4f,%.4f", m.lat, m.lon)}"
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.list_voice_memos)
+            .setItems(labels) { _, which ->
+                val memo = memos[which]
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Voice memo")
+                    .setMessage(
+                        String.format(Locale.US, "%.5f, %.5f", memo.lat, memo.lon)
+                    )
+                    .setPositiveButton(R.string.play) { _, _ ->
+                        if (!voiceMemos.play(memo)) toast("Playback failed")
+                    }
+                    .setNeutralButton(R.string.delete) { _, _ ->
+                        voiceMemos.delete(memo.id)
+                        refreshFieldMarkers()
+                        toast("Memo deleted")
+                    }
+                    .setNegativeButton(R.string.cancel, null)
+                    .show()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun playMemoById(id: String) {
+        val memo = voiceMemos.list().find { it.id == id } ?: return
+        if (!voiceMemos.play(memo)) toast("Playback failed")
+        else toast("Playing memo…")
+    }
+
+    // --- Measure mode (distance) ---
+
+    private fun handleMeasureTap(point: GeoPoint) {
+        val a = measureA
+        if (a == null) {
+            measureA = point
+            measureLineMarker?.remove()
+            measureLineMarker = if (::map.isInitialized) {
+                map.addMarker(
+                    MarkerOptions()
+                        .position(LatLng(point.lat, point.lon))
+                        .title("A")
+                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_CYAN))
+                )
+            } else null
+            binding.tvMeasureResult.text = "Point A set — tap point B"
+        } else {
+            val dist = MeasurementTool.calculateDistanceM(a, point)
+            binding.tvMeasureResult.visibility = View.VISIBLE
+            binding.tvMeasureResult.text = getString(
+                R.string.measure_result_format,
+                MeasurementTool.formatDistance(dist)
+            )
+            if (::map.isInitialized) {
+                map.addMarker(
+                    MarkerOptions()
+                        .position(LatLng(point.lat, point.lon))
+                        .title("B · ${MeasurementTool.formatDistance(dist)}")
+                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_CYAN))
+                )
+            }
+            toast(MeasurementTool.formatDistance(dist))
+            measureA = null
+        }
+    }
 
     companion object {
         private const val TAG = "Viewshed"

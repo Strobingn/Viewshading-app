@@ -1,29 +1,60 @@
 package com.viewshed.app.viewshed
 
 import android.content.Context
-import androidx.datastore.preferences.core.*
-import androidx.datastore.preferences.preferencesDataStore
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import java.io.File
+import java.util.UUID
 
-import kotlinx.coroutines.flow.first
+/**
+ * Favorite locations (JSON on disk — no DataStore dependency).
+ */
+class FavoritesManager(context: Context) {
 
-private val Context.dataStore by preferencesDataStore("favorites")
+    private val file = File(context.filesDir, "favorites.json")
+    private val gson = Gson()
+    private val type = object : TypeToken<MutableList<Favorite>>() {}.type
 
-object FavoritesManager {
-    private val FAVORITES_KEY = stringSetPreferencesKey("favorite_locations")
-
-    suspend fun addFavorite(context: Context, point: GeoPoint, name: String) {
-        val prefs = context.dataStore.data.first()
-        val current = prefs[FAVORITES_KEY]?.toMutableSet() ?: mutableSetOf()
-        current.add("${point.latitude},${point.longitude}|$name")
-        context.dataStore.edit { it[FAVORITES_KEY] = current }
+    data class Favorite(
+        val id: String = UUID.randomUUID().toString(),
+        val lat: Double,
+        val lon: Double,
+        val name: String,
+        val createdAt: Long = System.currentTimeMillis()
+    ) {
+        val location: GeoPoint get() = GeoPoint(lat, lon)
     }
 
-    suspend fun getFavorites(context: Context): List<Pair<GeoPoint, String>> {
-        val prefs = context.dataStore.data.first()
-        return prefs[FAVORITES_KEY]?.map {
-            val parts = it.split("|")
-            val coords = parts[0].split(",").map { it.toDouble() }
-            GeoPoint(coords[0], coords[1]) to parts.getOrElse(1) { "Location" }
-        } ?: emptyList()
+    fun list(): List<Favorite> = load().sortedByDescending { it.createdAt }
+
+    fun add(point: GeoPoint, name: String): Favorite {
+        val fav = Favorite(lat = point.lat, lon = point.lon, name = name.ifBlank { "Favorite" })
+        val all = load()
+        all.removeAll {
+            GeoMath.distanceM(it.location, point) < 15.0 && it.name == fav.name
+        }
+        all.add(fav)
+        save(all)
+        return fav
+    }
+
+    fun remove(id: String): Boolean {
+        val all = load()
+        val ok = all.removeAll { it.id == id }
+        if (ok) save(all)
+        return ok
+    }
+
+    private fun load(): MutableList<Favorite> {
+        if (!file.exists()) return mutableListOf()
+        return try {
+            gson.fromJson<MutableList<Favorite>>(file.readText(), type) ?: mutableListOf()
+        } catch (_: Exception) {
+            mutableListOf()
+        }
+    }
+
+    private fun save(list: List<Favorite>) {
+        file.writeText(gson.toJson(list))
     }
 }

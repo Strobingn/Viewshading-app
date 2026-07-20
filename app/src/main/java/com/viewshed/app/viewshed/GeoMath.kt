@@ -9,9 +9,15 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 object GeoMath {
+    /** Mean Earth radius (WGS84-ish) in meters. */
     const val EARTH_RADIUS_M = 6_371_000.0
 
+    /**
+     * Destination point given start, bearing (degrees clockwise from north),
+     * and great-circle distance in meters.
+     */
     fun destination(start: GeoPoint, bearingDeg: Double, distanceM: Double): GeoPoint {
+        if (distanceM <= 0.0) return start
         val d = distanceM / EARTH_RADIUS_M
         val bearing = Math.toRadians(bearingDeg)
         val lat1 = Math.toRadians(start.lat)
@@ -24,7 +30,7 @@ object GeoMath {
         return GeoPoint(Math.toDegrees(lat2), Math.toDegrees(lon2))
     }
 
-    /** Great-circle distance in meters. */
+    /** Great-circle distance in meters (haversine). */
     fun distanceM(a: GeoPoint, b: GeoPoint): Double {
         val lat1 = Math.toRadians(a.lat)
         val lat2 = Math.toRadians(b.lat)
@@ -36,8 +42,34 @@ object GeoMath {
     }
 
     /**
-     * Elevation angle (radians) from eye at [observerElev] to terrain at [targetElev],
-     * distance [distM]. Optional curvature + refraction (effective earth radius).
+     * Effective Earth radius for LOS with atmospheric refraction.
+     * k ≈ 0.13 standard → R_eff = R / (1 − k) > R (less apparent drop).
+     */
+    fun effectiveEarthRadiusM(refractionCoeff: Double): Double {
+        val k = refractionCoeff.coerceIn(0.0, 0.25)
+        return EARTH_RADIUS_M / (1.0 - k)
+    }
+
+    /**
+     * Geometric horizon distance on a sphere for eye height [eyeHeightM]
+     * above a smooth surface: d ≈ √(2 · R_eff · h).
+     */
+    fun geometricHorizonM(eyeHeightM: Double, refractionCoeff: Double = 0.13): Double {
+        val h = eyeHeightM.coerceAtLeast(0.0)
+        val r = effectiveEarthRadiusM(refractionCoeff)
+        return sqrt(2.0 * r * h)
+    }
+
+    /**
+     * Elevation angle (radians) from the eye to a target point.
+     *
+     * Without curvature: α = atan2(z_target − z_eye, dist)
+     *
+     * With curvature: the target is depressed by d² / (2 R_eff) relative to the
+     * tangent plane at the observer (standard radio / surveying approximation):
+     *   α = atan2(z_target − z_eye − d²/(2 R_eff), dist)
+     *
+     * [observerElev] / [targetElev] are absolute elevations (m), e.g. MSL + height AGL.
      */
     fun elevationAngleRad(
         observerElev: Double,
@@ -48,9 +80,9 @@ object GeoMath {
     ): Double {
         if (distM <= 0.0) return 0.0
         val deltaH = if (useCurvature) {
-            val curvatureDrop = (distM * distM) / (2.0 * EARTH_RADIUS_M)
-            val refraction = refractionCoeff * curvatureDrop
-            (targetElev - observerElev) - curvatureDrop + refraction
+            val rEff = effectiveEarthRadiusM(refractionCoeff)
+            val drop = (distM * distM) / (2.0 * rEff)
+            (targetElev - observerElev) - drop
         } else {
             targetElev - observerElev
         }
@@ -58,8 +90,8 @@ object GeoMath {
     }
 
     /**
-     * Approximate polygon area in m² using spherical excess (rings of lat/lon).
-     * Ring may be open or closed.
+     * Spherical polygon area (m²) via authalic excess on unit sphere, then scale.
+     * Ring may be open or closed. Sign ignored (absolute area).
      */
     fun polygonAreaM2(ring: List<GeoPoint>): Double {
         if (ring.size < 3) return 0.0
@@ -75,10 +107,9 @@ object GeoMath {
             val lat2 = Math.toRadians(p2.lat)
             val lon1 = Math.toRadians(p1.lon)
             val lon2 = Math.toRadians(p2.lon)
-            area += (lon2 - lon1) * (2 + sin(lat1) + sin(lat2))
+            area += (lon2 - lon1) * (2.0 + sin(lat1) + sin(lat2))
         }
-        area = abs(area) * EARTH_RADIUS_M * EARTH_RADIUS_M / 2.0
-        return area
+        return abs(area) * EARTH_RADIUS_M * EARTH_RADIUS_M / 2.0
     }
 
     fun polygonAreaKm2(ring: List<GeoPoint>): Double = polygonAreaM2(ring) / 1_000_000.0

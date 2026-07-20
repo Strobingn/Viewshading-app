@@ -111,31 +111,33 @@
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fabMyLocation"
+    <!-- FABs stacked above bottom sheet; margins updated in code from peek height -->
+    <LinearLayout
+        android:id="@+id/fabColumn"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="end|bottom"
         android:layout_marginEnd="16dp"
-        android:layout_marginBottom="16dp"
-        android:contentDescription="@string/use_my_location"
-        app:layout_anchor="@id/bottomSheet"
-        app:layout_anchorGravity="top|end"
-        app:srcCompat="@android:drawable/ic_menu_mylocation"
-        app:tint="@android:color/white" />
+        android:layout_marginBottom="220dp"
+        android:orientation="vertical">
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fabAddObserver"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end|bottom"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="80dp"
-        android:contentDescription="@string/add_observer_here"
-        app:layout_anchor="@id/bottomSheet"
-        app:layout_anchorGravity="top|end"
-        app:srcCompat="@android:drawable/ic_input_add"
-        app:tint="@android:color/white" />
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabAddObserver"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:contentDescription="@string/add_observer_here"
+            app:srcCompat="@android:drawable/ic_input_add"
+            app:tint="@android:color/white" />
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabMyLocation"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:contentDescription="@string/use_my_location"
+            app:srcCompat="@android:drawable/ic_menu_mylocation"
+            app:tint="@android:color/white" />
+    </LinearLayout>
 
     <!--
       Bottom sheet: PEAK content is only handle + height + Calculate/Clear.
@@ -148,7 +150,8 @@
         android:background="@drawable/bg_bottom_sheet"
         android:elevation="12dp"
         android:orientation="vertical"
-        app:behavior_fitToContents="true"
+        app:behavior_fitToContents="false"
+        app:behavior_halfExpandedRatio="0.55"
         app:behavior_hideable="false"
         app:behavior_peekHeight="200dp"
         app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
@@ -300,6 +303,7 @@
             android:layout_height="wrap_content"
             android:clipToPadding="false"
             android:fillViewport="false"
+            android:maxHeight="420dp"
             android:overScrollMode="ifContentScrolls">
 
             <LinearLayout
@@ -310,15 +314,16 @@
                 android:paddingHorizontal="12dp"
                 android:paddingBottom="24dp">
 
+                <!-- Integer cm steps avoid Material float stepSize bugs -->
                 <com.google.android.material.slider.Slider
                     android:id="@+id/sliderViewerHeight"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:contentDescription="@string/viewer_height_label"
-                    android:stepSize="0.1"
-                    android:value="1.7"
+                    android:stepSize="1"
+                    android:value="17"
                     android:valueFrom="0"
-                    android:valueTo="100"
+                    android:valueTo="1000"
                     app:labelBehavior="gone" />
 
                 <HorizontalScrollView
@@ -484,6 +489,43 @@
                     </com.google.android.material.textfield.TextInputLayout>
                 </LinearLayout>
 
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="8dp"
+                    android:text="@string/quality_label"
+                    android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chipQuality"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    app:selectionRequired="true"
+                    app:singleSelection="true">
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipQualityLow"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/quality_fast" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipQualityMed"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true"
+                        android:text="@string/quality_balanced" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipQualityHigh"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/quality_accurate" />
+                </com.google.android.material.chip.ChipGroup>
+
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchDemoTerrain"
                     android:layout_width="match_parent"
@@ -497,6 +539,27 @@
                     android:layout_height="wrap_content"
                     android:checked="true"
                     android:text="@string/include_curvature" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchAdaptive"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="false"
+                    android:text="@string/adaptive_sampling" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchBinaryHorizon"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="false"
+                    android:text="@string/binary_horizon" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchParallel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="@string/parallel_rays" />
 
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchMultiObserver"
@@ -517,6 +580,120 @@
                         android:inputType="numberDecimal"
                         android:text="0.13" />
                 </com.google.android.material.textfield.TextInputLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="12dp"
+                    android:paddingBottom="4dp"
+                    android:text="@string/field_tools"
+                    android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+                <TextView
+                    android:id="@+id/tvOfflineStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingBottom="4dp"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:text="@string/offline_status_empty" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchOfflineOnly"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="false"
+                    android:text="@string/use_offline_pack" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnCacheOffline"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="@string/cache_offline" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnManageOffline"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:text="@string/manage_offline" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="4dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnAddNote"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="@string/add_field_note" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnListNotes"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:text="@string/list_field_notes" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="4dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnVoiceMemo"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="@string/voice_memo_start" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnListMemos"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:text="@string/list_voice_memos" />
+                </LinearLayout>
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchMeasureMode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="false"
+                    android:text="@string/measure_mode" />
+
+                <TextView
+                    android:id="@+id/tvMeasureResult"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingBottom="4dp"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:visibility="gone"
+                    tools:text="Distance: 1.2 km"
+                    tools:visibility="visible" />
 
                 <LinearLayout
                     android:layout_width="match_parent"

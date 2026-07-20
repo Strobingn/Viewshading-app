@@ -8,16 +8,38 @@ data class ViewshedParams(
     val samplesPerRay: Int = 80,
     val useDemoTerrain: Boolean = true,
     val useCurvature: Boolean = true,
-    val refraction: Double = 0.13
+    val refraction: Double = 0.13,
+    /** Parallel rays on Default dispatcher (experimental performance). */
+    val parallelRays: Boolean = true,
+    /** Adaptive step size along ray based on slope change. */
+    val adaptiveSampling: Boolean = false,
+    /** Coarse linear pass + binary search to refine horizon distance. */
+    val binarySearchHorizon: Boolean = false,
+    val quality: SampleQuality = SampleQuality.MEDIUM
 ) {
     fun sanitized(): ViewshedParams = copy(
         eyeHeightM = eyeHeightM.coerceIn(0.0, 100.0),
         targetHeightM = targetHeightM.coerceIn(0.0, 200.0),
         maxDistKm = maxDistKm.coerceIn(0.1, 50.0),
         numRays = numRays.coerceIn(8, 360),
-        samplesPerRay = samplesPerRay.coerceIn(10, 200),
+        samplesPerRay = samplesPerRay.coerceIn(10, 250),
         refraction = refraction.coerceIn(0.0, 1.0)
     )
+
+    fun withQuality(q: SampleQuality): ViewshedParams = copy(
+        quality = q,
+        numRays = q.rays,
+        samplesPerRay = q.samples
+    )
+}
+
+/**
+ * Experimental quality presets (map to ray/sample density).
+ */
+enum class SampleQuality(val label: String, val rays: Int, val samples: Int) {
+    LOW("Fast", 36, 40),
+    MEDIUM("Balanced", 72, 80),
+    HIGH("Accurate", 120, 120)
 }
 
 data class ViewshedStats(
@@ -59,6 +81,7 @@ enum class AnalysisPreset(
             targetHeightM = targetHeightM,
             maxDistKm = maxDistKm,
             numRays = numRays,
-            samplesPerRay = samples
+            samplesPerRay = samples,
+            quality = SampleQuality.MEDIUM
         )
 }
