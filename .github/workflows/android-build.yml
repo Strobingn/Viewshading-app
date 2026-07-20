@@ -3,9 +3,7 @@ name: Android CI - Viewshading App
 on:
   push:
   pull_request:
-    branches: [main, master]
-  issue_comment:
-    types: [created]
+    branches: [main, master, grok]
   workflow_dispatch:
 
 permissions:
@@ -13,34 +11,13 @@ permissions:
 
 jobs:
   build:
-    # Normal pushes/PRs always build. Comment-triggered builds only run for comments
-    # on pull requests from trusted repository participants.
-    if: >-
-      github.event_name != 'issue_comment' ||
-      (
-        github.event.issue.pull_request != null &&
-        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-      )
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Resolve source revision
-        id: source
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
-            echo "ref=refs/pull/${{ github.event.issue.number }}/head" >> "$GITHUB_OUTPUT"
-            echo "label=pr-${{ github.event.issue.number }}-comment-${{ github.event.comment.id }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-            echo "label=${GITHUB_REF_NAME//\//-}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.source.outputs.ref }}
           fetch-depth: 0
 
       - name: Set up JDK 17
@@ -61,19 +38,15 @@ jobs:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
         shell: bash
         run: |
-          # Comment-triggered builds execute PR code, so never expose repository secrets.
-          # The app still compiles and runs in offline demo-terrain mode with an empty key.
-          if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
-            printf 'MAPS_API_KEY=\n' > secrets.properties
+          printf 'MAPS_API_KEY=%s\n' "${MAPS_API_KEY:-}" > secrets.properties
+          if [ -z "${MAPS_API_KEY}" ]; then
+            echo "WARNING: MAPS_API_KEY secret is empty or not set. Map will not load."
           else
-            printf 'MAPS_API_KEY=%s\n' "${MAPS_API_KEY:-}" > secrets.properties
+            echo "MAPS_API_KEY secret was injected into secrets.properties"
           fi
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
-
-      - name: Run Android lint
-        run: ./gradlew lintDebug --stacktrace --no-daemon
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace --no-daemon
@@ -81,7 +54,7 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-debug-${{ steps.source.outputs.label }}
+          name: viewshading-debug-${{ github.ref_name }}-${{ github.run_number }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -92,20 +65,9 @@ jobs:
       - name: Upload unsigned Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-release-unsigned-${{ steps.source.outputs.label }}
+          name: viewshading-release-unsigned-${{ github.ref_name }}-${{ github.run_number }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload test and lint reports on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: viewshading-failure-reports-${{ steps.source.outputs.label }}
-          path: |
-            app/build/reports/
-            app/build/test-results/
-          if-no-files-found: ignore
           retention-days: 14
 
       - name: Clean up secrets

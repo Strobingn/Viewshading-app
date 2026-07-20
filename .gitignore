@@ -26,3 +26,14 @@ captures/
 *.ap_
 *.aab
 !gradle/wrapper/gradle-wrapper.jar
+
+# Local device captures from android CLI
+captures/
+
+# Project-local agent skills (install via `android skills add --project=.`)
+skills/
+.agents/
+.claude/
+.gemini/
+.codex/
+.cursor/

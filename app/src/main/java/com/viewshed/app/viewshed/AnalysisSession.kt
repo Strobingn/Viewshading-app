@@ -3,7 +3,9 @@ package com.viewshed.app.viewshed
 import com.google.gson.Gson
 import java.io.File
 
-/** Save/load observer parameters and the sampled visibility result. */
+/**
+ * Save / load analysis sessions (observer + boundary + params snapshot).
+ */
 data class AnalysisSession(
     val observerLat: Double,
     val observerLon: Double,
@@ -12,7 +14,6 @@ data class AnalysisSession(
     val quality: String,
     val boundary: List<GeoPoint>,
     val rangesM: List<Double> = emptyList(),
-    val visibleSectors: List<VisibleSector> = emptyList(),
     val timestamp: Long = System.currentTimeMillis()
 ) {
     companion object {
@@ -24,8 +25,7 @@ data class AnalysisSession(
                 eyeHeightM = result.params.eyeHeightM,
                 quality = result.params.quality.name,
                 boundary = result.boundary,
-                rangesM = result.rangesM,
-                visibleSectors = result.visibleSectors
+                rangesM = result.rangesM
             )
     }
 }

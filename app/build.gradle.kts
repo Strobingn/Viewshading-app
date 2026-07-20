@@ -13,8 +13,10 @@ android {
         applicationId = "com.viewshed.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.4.2"
+        versionCode = 10
+        versionName = "1.6.1"
+        // Oracle Cloud shared backend (Viewshade + Find It)
+        buildConfigField("String", "DEFAULT_BACKEND_URL", "\"http://129.80.174.236:8000\"")
         // Optional: ./gradlew assembleDebug -PenableVulkanNative=true
         // Default off so CI/devices without NDK still build the CPU engine.
 
@@ -71,6 +73,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

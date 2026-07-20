@@ -6,35 +6,28 @@ object GeoExport {
         results: List<ViewshedResult>,
         multiObserver: Boolean
     ): String {
-        val features = results.mapIndexed { index, result ->
-            val polygons = result.visibleSectors.joinToString(",") { sector ->
-                val coordinates = closedRing(sector.boundary)
-                    .joinToString(",") { "[${it.lon},${it.lat}]" }
-                "[[$coordinates]]"
-            }
+        val features = results.mapIndexed { index, r ->
+            val coords = r.boundary.joinToString(",") { "[${it.lon},${it.lat}]" }
             """
             {
               "type": "Feature",
               "geometry": {
-                "type": "MultiPolygon",
-                "coordinates": [$polygons]
+                "type": "Polygon",
+                "coordinates": [[$coords]]
               },
               "properties": {
                 "observer_index": $index,
-                "observer_lat": ${result.observer.lat},
-                "observer_lon": ${result.observer.lon},
-                "eye_height_m": ${result.params.eyeHeightM},
-                "target_height_m": ${result.params.targetHeightM},
-                "max_dist_km": ${result.params.maxDistKm},
-                "num_rays": ${result.stats.numRays},
-                "samples_per_ray": ${result.stats.samplesPerRay},
-                "visible_cells": ${result.stats.visibleCells},
-                "total_cells": ${result.stats.totalCells},
-                "max_visible_range_m": ${result.stats.maxRangeM},
-                "avg_farthest_visible_range_m": ${result.stats.avgRangeM},
-                "visible_area_km2": ${result.stats.areaKm2},
-                "demo_terrain": ${result.params.useDemoTerrain},
-                "description": "Sampled terrain visibility cells"
+                "observer_lat": ${r.observer.lat},
+                "observer_lon": ${r.observer.lon},
+                "eye_height_m": ${r.params.eyeHeightM},
+                "target_height_m": ${r.params.targetHeightM},
+                "max_dist_km": ${r.params.maxDistKm},
+                "num_rays": ${r.stats.numRays},
+                "max_range_m": ${r.stats.maxRangeM},
+                "avg_range_m": ${r.stats.avgRangeM},
+                "area_km2": ${r.stats.areaKm2},
+                "demo_terrain": ${r.params.useDemoTerrain},
+                "description": "Viewshed visible area"
               }
             }
             """.trimIndent()
@@ -45,8 +38,7 @@ object GeoExport {
               "type": "FeatureCollection",
               "properties": {
                 "multi_observer": $multiObserver,
-                "count": ${results.size},
-                "overlap_removed": false
+                "count": ${results.size}
               },
               "features": [$features]
             }
@@ -54,40 +46,32 @@ object GeoExport {
     }
 
     fun toKml(results: List<ViewshedResult>): String {
-        val placemarks = results.mapIndexed { index, result ->
+        val placemarks = results.mapIndexed { index, r ->
+            val coords = r.boundary.joinToString(" ") { "${it.lon},${it.lat},0" }
             val color = KML_COLORS[index % KML_COLORS.size]
-            val polygons = result.visibleSectors.joinToString("\n") { sector ->
-                val coordinates = closedRing(sector.boundary)
-                    .joinToString(" ") { "${it.lon},${it.lat},0" }
-                """
-                <Polygon>
-                  <outerBoundaryIs>
-                    <LinearRing>
-                      <coordinates>$coordinates</coordinates>
-                    </LinearRing>
-                  </outerBoundaryIs>
-                </Polygon>
-                """.trimIndent()
-            }
             """
             <Placemark>
               <name>Viewshed ${index + 1}</name>
               <description>
-                Max ${"%.2f".format(result.stats.maxRangeKm)} km · Visible area ${"%.3f".format(result.stats.areaKm2)} km²
-                Eye ${result.params.eyeHeightM} m · Target ${result.params.targetHeightM} m
+                Max ${"%.2f".format(r.stats.maxRangeKm)} km · Area ${"%.3f".format(r.stats.areaKm2)} km²
+                Eye ${r.params.eyeHeightM} m · Target ${r.params.targetHeightM} m
               </description>
               <Style>
                 <PolyStyle><color>$color</color></PolyStyle>
-                <LineStyle><color>ffbdbdbd</color><width>1</width></LineStyle>
+                <LineStyle><color>ff40a000</color><width>2</width></LineStyle>
               </Style>
-              <MultiGeometry>
-                $polygons
-              </MultiGeometry>
+              <Polygon>
+                <outerBoundaryIs>
+                  <LinearRing>
+                    <coordinates>$coords</coordinates>
+                  </LinearRing>
+                </outerBoundaryIs>
+              </Polygon>
             </Placemark>
             <Placemark>
               <name>Observer ${index + 1}</name>
               <Point>
-                <coordinates>${result.observer.lon},${result.observer.lat},0</coordinates>
+                <coordinates>${r.observer.lon},${r.observer.lat},0</coordinates>
               </Point>
             </Placemark>
             """.trimIndent()
@@ -104,11 +88,74 @@ object GeoExport {
         """.trimIndent()
     }
 
-    private fun closedRing(points: List<GeoPoint>): List<GeoPoint> {
-        if (points.isEmpty() || points.first() == points.last()) return points
-        return points + points.first()
+    /** Phase 7 — GPX waypoints + track of boundary. */
+    fun toGpx(results: List<ViewshedResult>): String {
+        val wpts = results.mapIndexed { i, r ->
+            """
+            <wpt lat="${r.observer.lat}" lon="${r.observer.lon}">
+              <name>Observer ${i + 1}</name>
+              <desc>Eye ${r.params.eyeHeightM} m · Area ${"%.3f".format(r.stats.areaKm2)} km²</desc>
+            </wpt>
+            """.trimIndent()
+        }.joinToString("\n")
+        val trks = results.mapIndexed { i, r ->
+            val pts = r.boundary.joinToString("\n") {
+                """<trkpt lat="${it.lat}" lon="${it.lon}"></trkpt>"""
+            }
+            """
+            <trk><name>Viewshed ${i + 1}</name><trkseg>
+            $pts
+            </trkseg></trk>
+            """.trimIndent()
+        }.joinToString("\n")
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <gpx version="1.1" creator="Viewshed Calculator">
+            $wpts
+            $trks
+            </gpx>
+        """.trimIndent()
     }
 
+    /** Phase 7 — CSV of observers + stats. */
+    fun toCsv(results: List<ViewshedResult>): String {
+        val header = "index,observer_lat,observer_lon,eye_m,target_m,max_dist_km,max_range_km,avg_range_km,area_km2,rays"
+        val rows = results.mapIndexed { i, r ->
+            listOf(
+                i,
+                r.observer.lat,
+                r.observer.lon,
+                r.params.eyeHeightM,
+                r.params.targetHeightM,
+                r.params.maxDistKm,
+                r.stats.maxRangeKm,
+                r.stats.avgRangeKm,
+                r.stats.areaKm2,
+                r.stats.numRays
+            ).joinToString(",")
+        }
+        return (listOf(header) + rows).joinToString("\n")
+    }
+
+    fun frequencyToGeoJson(cells: List<ProfessionalAnalysis.FrequencyCell>, maxCount: Int): String {
+        val features = cells.map { c ->
+            val intensity = if (maxCount > 0) c.count.toDouble() / maxCount else 0.0
+            """
+            {
+              "type": "Feature",
+              "geometry": { "type": "Point", "coordinates": [${c.point.lon}, ${c.point.lat}] },
+              "properties": {
+                "count": ${c.count},
+                "weight": ${c.weight},
+                "intensity": $intensity
+              }
+            }
+            """.trimIndent()
+        }.joinToString(",")
+        return """{"type":"FeatureCollection","features":[$features]}"""
+    }
+
+    // AABBGGRR translucent greys (no green)
     private val KML_COLORS = listOf(
         "99BDBDBD",
         "999E9E9E",

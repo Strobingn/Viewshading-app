@@ -1,8 +1,7 @@
 package com.viewshed.app.viewshed
 
 /**
- * Outer visible extent for map framing only.
- * Use [ViewshedResult.visibleSectors] when displaying or exporting actual visibility.
+ * Horizon ring for map display — outer boundary of a high-resolution viewshed.
  */
 object HorizonLineCalculator {
 
@@ -15,17 +14,13 @@ object HorizonLineCalculator {
         val params = ViewshedParams(
             maxDistKm = maxDistKm,
             quality = quality,
-            adaptiveSampling = false,
-            binarySearchHorizon = false,
+            adaptiveSampling = true,
+            binarySearchHorizon = true,
             parallelRays = true,
             useDemoTerrain = elevations.useDemo
         ).withQuality(quality)
         val result = ViewshedEngine.compute(observer, params, elevations)
         val ring = result.boundary
-        return if (ring.size > 1 && ring.first() == ring.last()) {
-            ring.dropLast(1)
-        } else {
-            ring
-        }
+        return if (ring.size > 1 && ring.first() == ring.last()) ring.dropLast(1) else ring
     }
 }
