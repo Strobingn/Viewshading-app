@@ -2,17 +2,35 @@
 
 FastAPI + Docker service for heavy / high-resolution viewshed processing.
 
-## Quick start
+## Quick start (Docker)
 
-```bash
-cd backend
+Docker Desktop must be **running**.
+
+```powershell
+cd F:\Viewshading-app\backend
 docker compose up --build
 ```
 
-Service will be available at **http://localhost:8000**
+## Quick start (Windows, no Docker)
 
-- Docs: http://localhost:8000/docs
-- Health: http://localhost:8000/health
+```powershell
+cd F:\Viewshading-app\backend
+.\scripts\run-local.ps1
+```
+
+Service: **http://localhost:8000**
+
+- Docs: http://localhost:8000/docs  
+- Health: http://localhost:8000/health  
+
+### Smoke test
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+# POST demo viewshed (Newburgh)
+$body = '{"observer":{"lat":41.503,"lon":-74.010,"height_m":1.6},"max_distance_m":2000,"num_rays":36,"samples_per_ray":40}'
+Invoke-RestMethod http://127.0.0.1:8000/viewshed -Method POST -Body $body -ContentType "application/json"
+```
 
 ## Endpoints
 
@@ -37,6 +55,12 @@ Multipart form:
 - `file` – GeoTIFF / ASC / XYZ
 - `lat`, `lon`, `height_m`, … (same params as above)
 
+## Oracle Cloud (production / always-on)
+
+Step-by-step: **[deploy/oci/README.md](./deploy/oci/README.md)**  
+Checklist: **[deploy/oci/oci-checklist.md](./deploy/oci/oci-checklist.md)**  
+VM setup script: **[deploy/oci/setup-on-vm.sh](./deploy/oci/setup-on-vm.sh)**
+
 ## Notes
 
 - Currently uses a synthetic demo terrain so the Android client can be tested end-to-end immediately.
@@ -45,4 +69,5 @@ Multipart form:
 
 ## Android integration
 
-Point the app at `http://<your-machine-ip>:8000` (or use a tunnel / production host).
+Point the app at `http://<your-machine-ip>:8000` (local LAN) or  
+`http://<oracle-public-ip>:8000` (OCI). HTTPS recommended before public production.
