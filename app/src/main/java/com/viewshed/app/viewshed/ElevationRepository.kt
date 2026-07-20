@@ -2,6 +2,7 @@ package com.viewshed.app.viewshed
 
 import android.util.Log
 import com.viewshed.app.BuildConfig
+import com.viewshed.app.data.ElevationDataSources
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -34,17 +35,32 @@ class ElevationRepository {
             .create(ElevationService::class.java)
     }
 
+    enum class ElevSource {
+        /** Synthetic hills (always offline). */
+        DEMO,
+        /** Google Elevation API (MAPS_API_KEY). */
+        GOOGLE,
+        /** Open-Topo-Data USGS 3DEP. */
+        USGS_3DEP,
+        /** Open-Topo-Data SRTM 90 m. */
+        SRTM,
+        /** Open-Topo-Data ETOPO1 (includes bathymetry). */
+        ETOPO
+    }
+
     /**
      * @param offline Prefer / fill from [OfflineMapCache] when provided.
      * @param offlineOnly Skip network; use offline pack + demo fallback only.
+     * @param source Network elevation product when not demo/offline-only.
      */
     suspend fun resolveElevations(
         points: List<GeoPoint>,
         useDemo: Boolean,
         offline: OfflineMapCache? = null,
-        offlineOnly: Boolean = false
+        offlineOnly: Boolean = false,
+        source: ElevSource = ElevSource.GOOGLE
     ): ElevationGrid {
-        if (useDemo) {
+        if (useDemo || source == ElevSource.DEMO) {
             val map = points.associate { it.key() to DemoTerrain.elevation(it) }
             return ElevationGrid(map, useDemo = true)
         }
@@ -55,7 +71,13 @@ class ElevationRepository {
             }
             return ElevationGrid(map, useDemo = false)
         }
-        val map = fetchElevationsBatched(points).toMutableMap()
+        val map = when (source) {
+            ElevSource.GOOGLE -> fetchElevationsBatched(points).toMutableMap()
+            ElevSource.USGS_3DEP -> fetchOpenTopo(ElevationDataSources.Source.USGS_3DEP, points)
+            ElevSource.SRTM -> fetchOpenTopo(ElevationDataSources.Source.SRTM, points)
+            ElevSource.ETOPO -> fetchOpenTopo(ElevationDataSources.Source.ETOPO, points)
+            ElevSource.DEMO -> points.associate { it.key() to DemoTerrain.elevation(it) }.toMutableMap()
+        }
         if (offline != null) {
             for (p in points) {
                 if (!map.containsKey(p.key())) {
@@ -64,6 +86,20 @@ class ElevationRepository {
             }
         }
         return ElevationGrid(map, useDemo = false)
+    }
+
+    private suspend fun fetchOpenTopo(
+        src: ElevationDataSources.Source,
+        points: List<GeoPoint>
+    ): MutableMap<String, Double> {
+        val remote = ElevationDataSources.fetch(src, points)
+        if (remote != null && remote.isNotEmpty()) {
+            val map = remote.toMutableMap()
+            points.forEach { p -> map.putIfAbsent(p.key(), DemoTerrain.elevation(p)) }
+            return map
+        }
+        Log.w(TAG, "OpenTopo ${src.label} failed — falling back to Google/demo")
+        return fetchElevationsBatched(points).toMutableMap()
     }
 
     private suspend fun fetchElevationsBatched(points: List<GeoPoint>): Map<String, Double> {

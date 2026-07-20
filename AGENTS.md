@@ -12,8 +12,10 @@ Native Android app for line-of-sight viewshed analysis on Google Maps.
 | **UI** | Views + ViewBinding + Material 3 + Maps / Elevation |
 | **Debug APK** | `app\build\outputs\apk\debug\app-debug.apk` |
 | **GitHub** | https://github.com/Strobingn/Viewshading-app |
-| **version** | `1.5.0` (versionCode 8) — field tools phases 1–3 |
-| **Field tools** | Offline elevation packs · field notes · voice memos · measure mode (see `ROADMAP.md`) |
+| **version** | `1.6.0` (versionCode 9) — pro analysis + field ops + multi-source elev |
+| **Field tools** | Offline packs · notes · voice · measure · favorites · history · forms · geotag photo |
+| **Pro analysis** | Intervis · cumulative/frequency · weighted · path LOS · sun shadow (see `ROADMAP.md`) |
+| **Elev sources** | Google · USGS 3DEP · SRTM · ETOPO (Open-Topo-Data) |
 
 ## Android CLI (required)
 

@@ -42,16 +42,23 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import com.viewshed.app.databinding.ActivityMainBinding
+import com.viewshed.app.performance.PerformanceMonitor
 import com.viewshed.app.viewshed.AnalysisPreset
 import com.viewshed.app.viewshed.AnalysisSession
 import com.viewshed.app.viewshed.AnalysisSessionManager
+import com.viewshed.app.viewshed.CompassHelper
 import com.viewshed.app.viewshed.ElevationRepository
+import com.viewshed.app.viewshed.FavoritesManager
+import com.viewshed.app.viewshed.FieldDataForms
 import com.viewshed.app.viewshed.FieldNotesManager
 import com.viewshed.app.viewshed.GeoExport
 import com.viewshed.app.viewshed.GeoPoint
 import com.viewshed.app.viewshed.MeasurementTool
 import com.viewshed.app.viewshed.OfflineMapCache
+import com.viewshed.app.viewshed.PhotoGeotagHelper
+import com.viewshed.app.viewshed.ProfessionalAnalysis
 import com.viewshed.app.viewshed.SampleQuality
+import com.viewshed.app.viewshed.SessionHistory
 import com.viewshed.app.viewshed.ViewshedEngine
 import com.viewshed.app.viewshed.ViewshedParams
 import com.viewshed.app.viewshed.ViewshedResult
@@ -81,6 +88,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var offlineCache: OfflineMapCache
     private lateinit var notesManager: FieldNotesManager
     private lateinit var voiceMemos: VoiceMemoHelper
+    private lateinit var favorites: FavoritesManager
+    private lateinit var sessionHistory: SessionHistory
+    private lateinit var fieldForms: FieldDataForms
+    private lateinit var photoGeotag: PhotoGeotagHelper
+    private var compass: CompassHelper? = null
 
     private val observers = mutableListOf<GeoPoint>()
     private val markers = mutableListOf<Marker>()
@@ -88,12 +100,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val results = mutableListOf<ViewshedResult>()
     private val noteMarkers = mutableListOf<Marker>()
     private val memoMarkers = mutableListOf<Marker>()
+    private val analysisOverlays = mutableListOf<Polygon>()
+    private val analysisMarkers = mutableListOf<Marker>()
+    private val pathPoints = mutableListOf<GeoPoint>()
 
     private var calcJob: Job? = null
     /** Prevents slider ↔ text feedback loops while editing viewer height. */
     private var syncingHeight = false
     private var measureA: GeoPoint? = null
     private var measureLineMarker: Marker? = null
+    private var pathMode = false
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -113,6 +129,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (granted) toggleVoiceMemo() else toast("Microphone permission required for voice memos.")
     }
 
+    private val pickPhotoRequest = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        val loc = activeFieldPoint()
+        val photo = photoGeotag.importAndGeotag(uri, loc)
+        if (photo != null) toast("Photo geotagged @ ${"%.5f".format(loc.lat)}, ${"%.5f".format(loc.lon)}")
+        else toast("Geotag failed")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         ThemePreferences.applySaved(this)
         super.onCreate(savedInstanceState)
@@ -123,6 +149,24 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         offlineCache = OfflineMapCache(this)
         notesManager = FieldNotesManager(this)
         voiceMemos = VoiceMemoHelper(this)
+        favorites = FavoritesManager(this)
+        sessionHistory = SessionHistory(this)
+        fieldForms = FieldDataForms(this)
+        photoGeotag = PhotoGeotagHelper(this)
+        compass = CompassHelper(this) { deg ->
+            runOnUiThread {
+                if (::binding.isInitialized) {
+                    binding.tvCompass.text = getString(
+                        R.string.compass_format,
+                        deg,
+                        compassCardinal(deg)
+                    )
+                }
+            }
+        }.also {
+            if (it.available) it.start()
+            else binding.tvCompass.text = "Compass: sensors unavailable"
+        }
 
         // Initialize Maps before fragment async callback (avoids some tablet cold-start blanks)
         try {
@@ -143,6 +187,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     override fun onDestroy() {
+        compass?.stop()
         voiceMemos.release()
         super.onDestroy()
     }
@@ -203,6 +248,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnClear.setOnClickListener { clearAll() }
         binding.btnExportGeoJson.setOnClickListener { shareText(GeoExport.toGeoJson(results, multiObserver = binding.switchMultiObserver.isChecked), "application/geo+json", "Viewshed.geojson") }
         binding.btnExportKml.setOnClickListener { shareText(GeoExport.toKml(results), "application/vnd.google-earth.kml+xml", "Viewshed.kml") }
+        binding.btnExportGpx.setOnClickListener { shareText(GeoExport.toGpx(results), "application/gpx+xml", "Viewshed.gpx") }
+        binding.btnExportCsv.setOnClickListener { shareText(GeoExport.toCsv(results), "text/csv", "Viewshed.csv") }
 
         binding.btnSearch.setOnClickListener { searchPlace() }
         binding.etSearch.setOnEditorActionListener { _, actionId, _ ->
@@ -234,6 +281,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         setupViewerHeightControls()
         setupQualityAndExperimental()
         setupFieldTools()
+        setupProAnalysis()
 
         // Prefer real elevation when Maps key is baked in
         binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
@@ -247,6 +295,32 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
 
         setExportEnabled(false)
+    }
+
+    private fun setupProAnalysis() {
+        binding.btnIntervis.setOnClickListener { runIntervisibility() }
+        binding.btnCumulative.setOnClickListener { runCumulative() }
+        binding.btnFrequency.setOnClickListener { runFrequency() }
+        binding.btnShadow.setOnClickListener { runShadow() }
+        binding.btnPathVis.setOnClickListener { togglePathMode() }
+        binding.btnWeighted.setOnClickListener { runWeighted() }
+        binding.btnFavorites.setOnClickListener { showFavoritesDialog() }
+        binding.btnHistory.setOnClickListener { showHistoryDialog() }
+        binding.btnFieldForm.setOnClickListener { promptFieldForm() }
+        binding.btnGeotagPhoto.setOnClickListener { pickPhotoRequest.launch("image/*") }
+    }
+
+    private fun selectedElevSource(): ElevationRepository.ElevSource = when {
+        binding.chipElevUsgs.isChecked -> ElevationRepository.ElevSource.USGS_3DEP
+        binding.chipElevSrtm.isChecked -> ElevationRepository.ElevSource.SRTM
+        binding.chipElevEtopo.isChecked -> ElevationRepository.ElevSource.ETOPO
+        else -> ElevationRepository.ElevSource.GOOGLE
+    }
+
+    private fun compassCardinal(deg: Float): String {
+        val dirs = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+        val i = ((deg + 22.5f) / 45f).toInt() % 8
+        return dirs[i]
     }
 
     private fun setupFieldTools() {
@@ -440,20 +514,24 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         map.uiSettings.isMapToolbarEnabled = false
 
         map.setOnMapClickListener { latLng ->
-            if (binding.switchMeasureMode.isChecked) {
-                handleMeasureTap(GeoPoint(latLng.latitude, latLng.longitude))
+            val p = GeoPoint(latLng.latitude, latLng.longitude)
+            when {
+                binding.switchMeasureMode.isChecked -> handleMeasureTap(p)
+                pathMode -> addPathPoint(p)
             }
         }
 
         map.setOnMapLongClickListener { latLng ->
+            val p = GeoPoint(latLng.latitude, latLng.longitude)
             if (binding.switchMeasureMode.isChecked) {
-                handleMeasureTap(GeoPoint(latLng.latitude, latLng.longitude))
+                handleMeasureTap(p)
                 return@setOnMapLongClickListener
             }
-            placeObserver(
-                GeoPoint(latLng.latitude, latLng.longitude),
-                clearOthers = !binding.switchMultiObserver.isChecked
-            )
+            if (pathMode) {
+                addPathPoint(p)
+                return@setOnMapLongClickListener
+            }
+            placeObserver(p, clearOthers = !binding.switchMultiObserver.isChecked)
         }
 
         map.setOnMarkerClickListener { marker ->
@@ -634,12 +712,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     binding.tvProgress.text = "Observer ${index + 1}/${targets.size}…"
 
                     val samples = ViewshedEngine.samplePoints(observer, params)
+                    val t0 = android.os.SystemClock.elapsedRealtime()
                     val elev = withContext(Dispatchers.IO) {
                         elevationRepo.resolveElevations(
                             points = samples,
                             useDemo = params.useDemoTerrain,
                             offline = offlineCache,
-                            offlineOnly = binding.switchOfflineOnly.isChecked
+                            offlineOnly = binding.switchOfflineOnly.isChecked,
+                            source = selectedElevSource()
                         )
                     }
                     val result = ViewshedEngine.compute(
@@ -659,6 +739,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                             }
                         }
                     )
+                    PerformanceMonitor.record(
+                        "viewshed",
+                        android.os.SystemClock.elapsedRealtime() - t0,
+                        rayCount = params.numRays,
+                        sampleCount = samples.size
+                    )
                     newResults.add(result)
                     if (::map.isInitialized) drawResult(result, index)
                 }
@@ -666,15 +752,24 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 results.addAll(newResults)
                 showStats(results)
                 setExportEnabled(results.any { it.boundary.size >= 3 })
+                binding.tvPerf.text = "Perf: ${PerformanceMonitor.summary()}"
                 newResults.lastOrNull()?.let { last ->
                     try {
                         val file = java.io.File(filesDir, "last_session.json")
                         AnalysisSessionManager.save(AnalysisSession.fromResult(last), file)
+                        sessionHistory.add(last)
+                        val w = ProfessionalAnalysis.weightedStats(last)
+                        binding.tvProStatus.text =
+                            "Weighted score ${"%.2f".format(w.weightedScore)} km²-eq · near ${"%.2f".format(w.nearAreaKm2)} · far ${"%.2f".format(w.farAreaKm2)}"
                     } catch (e: Exception) {
                         Log.w(TAG, "session save failed", e)
                     }
                 }
-                val mode = if (params.useDemoTerrain) "demo" else "elevation API"
+                val mode = when {
+                    params.useDemoTerrain -> "demo"
+                    binding.switchOfflineOnly.isChecked -> "offline pack"
+                    else -> selectedElevSource().name
+                }
                 toast("Viewshed ready — ${results.size} observer(s) · $mode")
             } catch (e: Exception) {
                 Log.e(TAG, "Calculation error", e)
@@ -763,8 +858,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun clearAll() {
         calcJob?.cancel()
         clearOverlaysOnly()
+        clearAnalysisOverlays()
         observers.clear()
+        pathPoints.clear()
+        pathMode = false
+        binding.btnPathVis.text = getString(R.string.btn_path_vis)
         binding.tvStats.visibility = View.GONE
+        binding.tvProStatus.text = getString(R.string.pro_status_hint)
         setExportEnabled(false)
         setCalculating(false)
         toast("Cleared. Long-press to place a new observer.")
@@ -781,6 +881,355 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun setExportEnabled(enabled: Boolean) {
         binding.btnExportGeoJson.isEnabled = enabled
         binding.btnExportKml.isEnabled = enabled
+        binding.btnExportGpx.isEnabled = enabled
+        binding.btnExportCsv.isEnabled = enabled
+    }
+
+    private fun clearAnalysisOverlays() {
+        analysisOverlays.forEach { it.remove() }
+        analysisOverlays.clear()
+        analysisMarkers.forEach { it.remove() }
+        analysisMarkers.clear()
+    }
+
+    private fun runIntervisibility() {
+        if (observers.size < 2) {
+            toast("Place at least 2 observers (enable multi-observer).")
+            return
+        }
+        lifecycleScope.launch {
+            try {
+                setCalculating(true)
+                val params = readParams()
+                val pts = observers.toList()
+                val samples = pts + pts.flatMapIndexed { i, a ->
+                    pts.drop(i + 1).flatMap { b ->
+                        val bearing = com.viewshed.app.viewshed.GeoMath.bearingDeg(a, b)
+                        val dist = com.viewshed.app.viewshed.GeoMath.distanceM(a, b)
+                        (1 until 40).map { s ->
+                            com.viewshed.app.viewshed.GeoMath.destination(a, bearing, dist * s / 40.0)
+                        }
+                    }
+                }
+                val elev = withContext(Dispatchers.IO) {
+                    elevationRepo.resolveElevations(
+                        samples, params.useDemoTerrain, offlineCache,
+                        binding.switchOfflineOnly.isChecked, selectedElevSource()
+                    )
+                }
+                val matrix = withContext(Dispatchers.Default) {
+                    ProfessionalAnalysis.multiObserverMatrix(
+                        pts, elev, params.eyeHeightM, 60, params.useCurvature, params.refraction
+                    )
+                }
+                clearAnalysisOverlays()
+                if (::map.isInitialized) {
+                    for (i in pts.indices) {
+                        for (j in i + 1 until pts.size) {
+                            val visible = matrix[i][j]
+                            val poly = map.addPolygon(
+                                PolygonOptions()
+                                    .add(LatLng(pts[i].lat, pts[i].lon), LatLng(pts[j].lat, pts[j].lon), LatLng(pts[i].lat, pts[i].lon))
+                                    .strokeColor(if (visible) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
+                                    .strokeWidth(5f)
+                                    .fillColor(0x00000000)
+                            )
+                            analysisOverlays.add(poly)
+                        }
+                    }
+                }
+                val summary = ProfessionalAnalysis.matrixSummary(matrix)
+                binding.tvProStatus.text = "Intervisibility: $summary"
+                toast(summary)
+            } catch (e: Exception) {
+                Log.e(TAG, "intervis", e)
+                toast("Intervis failed: ${e.message}")
+            } finally {
+                setCalculating(false)
+            }
+        }
+    }
+
+    private fun runCumulative() {
+        if (results.isEmpty()) {
+            toast("Calculate viewsheds first (multi-observer recommended).")
+            return
+        }
+        lifecycleScope.launch {
+            try {
+                setCalculating(true)
+                val cum = withContext(Dispatchers.Default) {
+                    ProfessionalAnalysis.cumulativeViewshed(results, gridSteps = 24)
+                }
+                clearAnalysisOverlays()
+                drawFrequencyCells(cum.cells, cum.maxCount)
+                val msg = "Cumulative ≈ ${"%.2f".format(cum.unionApproxKm2)} km² · max overlap ${cum.maxCount} · ${cum.observerCount} observers"
+                binding.tvProStatus.text = msg
+                toast(msg)
+            } catch (e: Exception) {
+                toast("Cumulative failed: ${e.message}")
+            } finally {
+                setCalculating(false)
+            }
+        }
+    }
+
+    private fun runFrequency() = runCumulative()
+
+    private fun drawFrequencyCells(cells: List<ProfessionalAnalysis.FrequencyCell>, maxCount: Int) {
+        if (!::map.isInitialized || cells.isEmpty()) return
+        // Subsample markers for performance
+        val step = maxOf(1, cells.size / 200)
+        cells.forEachIndexed { idx, cell ->
+            if (idx % step != 0) return@forEachIndexed
+            val t = if (maxCount > 0) cell.count.toFloat() / maxCount else 0f
+            val hue = 200f - t * 160f // blue → red intensity
+            val m = map.addMarker(
+                MarkerOptions()
+                    .position(LatLng(cell.point.lat, cell.point.lon))
+                    .title("Seen by ${cell.count}")
+                    .icon(BitmapDescriptorFactory.defaultMarker(hue))
+                    .alpha(0.75f)
+            )
+            m?.let { analysisMarkers.add(it) }
+        }
+    }
+
+    private fun runShadow() {
+        val observer = observers.lastOrNull()
+        if (observer == null) {
+            toast("Place an observer first.")
+            return
+        }
+        lifecycleScope.launch {
+            try {
+                setCalculating(true)
+                val params = readParams()
+                val samples = ViewshedEngine.samplePoints(observer, params)
+                val elev = withContext(Dispatchers.IO) {
+                    elevationRepo.resolveElevations(
+                        samples, params.useDemoTerrain, offlineCache,
+                        binding.switchOfflineOnly.isChecked, selectedElevSource()
+                    )
+                }
+                val shadow = withContext(Dispatchers.Default) {
+                    ProfessionalAnalysis.shadowAnalysis(observer, elev, params)
+                }
+                clearAnalysisOverlays()
+                if (!shadow.sunUp) {
+                    binding.tvProStatus.text = "Sun is below horizon — no shadow polygon"
+                    toast("Sun below horizon")
+                    return@launch
+                }
+                if (::map.isInitialized && shadow.shadowBoundary.size >= 3) {
+                    val poly = map.addPolygon(
+                        PolygonOptions()
+                            .addAll(shadow.shadowBoundary.map { LatLng(it.lat, it.lon) })
+                            .fillColor(0x55424242)
+                            .strokeColor(0xFFFFC107.toInt())
+                            .strokeWidth(3f)
+                            .geodesic(true)
+                    )
+                    analysisOverlays.add(poly)
+                }
+                val s = shadow.solar
+                val msg = "Sun az ${"%.0f".format(s.azimuthDeg)}° alt ${"%.1f".format(s.altitudeDeg)}° · lit footprint drawn"
+                binding.tvProStatus.text = msg
+                toast(msg)
+            } catch (e: Exception) {
+                toast("Shadow failed: ${e.message}")
+            } finally {
+                setCalculating(false)
+            }
+        }
+    }
+
+    private fun togglePathMode() {
+        pathMode = !pathMode
+        if (pathMode) {
+            pathPoints.clear()
+            toast("Path LOS: tap path points, tap Path LOS again to run")
+            binding.tvProStatus.text = "Path mode ON — tap map to add vertices"
+            binding.btnPathVis.text = "Run path"
+        } else {
+            if (pathPoints.size < 2) {
+                toast("Need 2+ path points")
+                binding.btnPathVis.text = getString(R.string.btn_path_vis)
+                return
+            }
+            runPathVisibility()
+            binding.btnPathVis.text = getString(R.string.btn_path_vis)
+        }
+    }
+
+    private fun addPathPoint(p: GeoPoint) {
+        pathPoints.add(p)
+        if (::map.isInitialized) {
+            val m = map.addMarker(
+                MarkerOptions()
+                    .position(LatLng(p.lat, p.lon))
+                    .title("Path ${pathPoints.size}")
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE))
+            )
+            m?.let { analysisMarkers.add(it) }
+        }
+        binding.tvProStatus.text = "Path points: ${pathPoints.size}"
+    }
+
+    private fun runPathVisibility() {
+        val observer = observers.lastOrNull()
+        if (observer == null) {
+            toast("Place an observer first.")
+            return
+        }
+        val path = pathPoints.toList()
+        lifecycleScope.launch {
+            try {
+                setCalculating(true)
+                val params = readParams()
+                val samples = path + ViewshedEngine.samplePoints(observer, params).take(200)
+                val elev = withContext(Dispatchers.IO) {
+                    elevationRepo.resolveElevations(
+                        samples, params.useDemoTerrain, offlineCache,
+                        binding.switchOfflineOnly.isChecked, selectedElevSource()
+                    )
+                }
+                val res = withContext(Dispatchers.Default) {
+                    ProfessionalAnalysis.pathVisibility(
+                        observer, path, elev,
+                        params.eyeHeightM, params.targetHeightM,
+                        24, params.useCurvature, params.refraction
+                    )
+                }
+                val msg = "Path LOS ${"%.0f".format(res.visibleFraction * 100)}% visible · " +
+                    "${"%.0f".format(res.visibleLengthM)} / ${"%.0f".format(res.totalLengthM)} m"
+                binding.tvProStatus.text = msg
+                toast(msg)
+            } catch (e: Exception) {
+                toast("Path LOS failed: ${e.message}")
+            } finally {
+                setCalculating(false)
+                pathPoints.clear()
+            }
+        }
+    }
+
+    private fun runWeighted() {
+        if (results.isEmpty()) {
+            toast("Calculate a viewshed first.")
+            return
+        }
+        val lines = results.mapIndexed { i, r ->
+            val w = ProfessionalAnalysis.weightedStats(r)
+            "Obs ${i + 1}: score ${"%.2f".format(w.weightedScore)} · near ${"%.2f".format(w.nearAreaKm2)} · far ${"%.2f".format(w.farAreaKm2)} km²"
+        }
+        binding.tvProStatus.text = lines.joinToString(" · ")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.btn_weighted)
+            .setMessage(lines.joinToString("\n"))
+            .setPositiveButton(R.string.settings_done, null)
+            .show()
+    }
+
+    private fun showFavoritesDialog() {
+        val items = favorites.list()
+        val labels = mutableListOf(getString(R.string.add_favorite))
+        labels.addAll(items.map { "${it.name} (${"%.4f".format(it.lat)}, ${"%.4f".format(it.lon)})" })
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.btn_favorites)
+            .setItems(labels.toTypedArray()) { _, which ->
+                if (which == 0) {
+                    val input = EditText(this).apply {
+                        hint = getString(R.string.favorite_name)
+                        setPadding(48, 32, 48, 32)
+                    }
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle(R.string.add_favorite)
+                        .setView(input)
+                        .setPositiveButton(R.string.save) { _, _ ->
+                            val name = input.text?.toString().orEmpty().ifBlank { "Favorite" }
+                            favorites.add(activeFieldPoint(), name)
+                            toast("Saved: $name")
+                        }
+                        .setNegativeButton(R.string.cancel, null)
+                        .show()
+                } else {
+                    val fav = items[which - 1]
+                    if (::map.isInitialized) {
+                        map.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(LatLng(fav.lat, fav.lon), 14f)
+                        )
+                    }
+                    placeObserver(fav.location, clearOthers = !binding.switchMultiObserver.isChecked)
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showHistoryDialog() {
+        val items = sessionHistory.list()
+        if (items.isEmpty()) {
+            toast("No history yet — run Calculate.")
+            return
+        }
+        val labels = items.map {
+            "${it.label} · ${"%.2f".format(it.areaKm2)} km² · ${"%.4f".format(it.lat)},${"%.4f".format(it.lon)}"
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.btn_history)
+            .setItems(labels) { _, which ->
+                val h = items[which]
+                if (::map.isInitialized) {
+                    map.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(LatLng(h.lat, h.lon), 13f)
+                    )
+                }
+                placeObserver(GeoPoint(h.lat, h.lon), clearOthers = true)
+                setViewerHeightM(h.eyeHeightM, fromUser = false)
+                binding.etMaxDistance.setText(h.maxDistKm.toString())
+            }
+            .setNeutralButton("Clear") { _, _ ->
+                sessionHistory.clear()
+                toast("History cleared")
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun promptFieldForm() {
+        val point = activeFieldPoint()
+        val site = EditText(this).apply { hint = "Site name"; setPadding(48, 16, 48, 8) }
+        val weather = EditText(this).apply { hint = "Weather"; setPadding(48, 8, 48, 8) }
+        val conditions = EditText(this).apply { hint = "Conditions"; setPadding(48, 8, 48, 8) }
+        val notes = EditText(this).apply {
+            hint = "Notes"
+            minLines = 2
+            setPadding(48, 8, 48, 16)
+        }
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(site)
+            addView(weather)
+            addView(conditions)
+            addView(notes)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.btn_field_form)
+            .setMessage(String.format(Locale.US, "%.5f, %.5f", point.lat, point.lon))
+            .setView(box)
+            .setPositiveButton(R.string.save) { _, _ ->
+                fieldForms.save(
+                    point,
+                    site.text?.toString().orEmpty(),
+                    weather.text?.toString().orEmpty(),
+                    conditions.text?.toString().orEmpty(),
+                    notes.text?.toString().orEmpty()
+                )
+                toast("Field form saved")
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun shareText(body: String, mime: String, title: String) {

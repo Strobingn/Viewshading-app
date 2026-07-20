@@ -120,5 +120,16 @@ object GeoMath {
         return b
     }
 
+    /** Initial bearing degrees clockwise from north (0–360). */
+    fun bearingDeg(from: GeoPoint, to: GeoPoint): Double {
+        val lat1 = Math.toRadians(from.lat)
+        val lat2 = Math.toRadians(to.lat)
+        val dLon = Math.toRadians(to.lon - from.lon)
+        val y = sin(dLon) * cos(lat2)
+        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        return clampBearing(Math.toDegrees(atan2(y, x)))
+    }
+
     fun degToRad(d: Double): Double = d * PI / 180.0
+    fun radToDeg(r: Double): Double = r * 180.0 / PI
 }
