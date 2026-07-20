@@ -6,7 +6,7 @@
 - Configure observer height (eye level), max distance, ray resolution.
 - Computes line-of-sight (LOS) viewshed using radial ray marching.
 - Uses Google Elevation API for real terrain (or built-in demo terrain generator for offline testing).
-- Displays visible area as a filled Polygon overlay on the map (green = visible).
+- Displays sampled visible terrain cells, preserving hidden valleys and visible peaks along each ray.
 - Supports earth curvature + atmospheric refraction correction.
 - Newburgh/Hudson River NY focused defaults (coords preloaded).
 - Docker backend option included for heavy local DEM processing (recommended for production/high-res).
@@ -40,6 +40,14 @@
 - Download high-res DEM: https://orthos.dhses.ny.gov/ (Discover GIS Data NY) or USGS 3DEP / NYS LiDAR.
 - For app: Place DEM tiles in assets or download to device storage.
 - Example tile for Newburgh area: Search "NY_Hudson_1_D22" or similar.
+
+## Visibility accuracy
+
+- Real-terrain mode stops on missing or rejected elevation data; it never silently mixes synthetic demo terrain into a real result.
+- Target height is tested against the terrain horizon without becoming an imaginary obstruction at every sample.
+- The shaded mask preserves separate visible runs along each ray instead of filling one outer-radius polygon.
+- This is a bare-earth terrain viewshed. Trees and buildings require a DSM or another surface-height source.
+- Ray and sample spacing still determine the smallest feature the app can resolve.
 
 ## Production Notes (Blue Team Style)
 - This is production-ready skeleton. Add auth, caching, offline DEM preloading for field use (kayak/fishing?).

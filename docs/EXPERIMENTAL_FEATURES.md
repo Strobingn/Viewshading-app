@@ -1,24 +1,36 @@
-# Experimental features (fixed 2026-07-20)
+# Viewshed engine features
 
-## Working (CPU engine)
+## Working CPU analysis
 
-| Feature | Where | Notes |
-|--------|--------|------|
-| Parallel rays | Params / switch | Coroutine per-ray on `Dispatchers.Default` |
-| Adaptive sampling | Switch | Denser steps when slope/angle changes |
-| Binary-search horizon | Switch | Refines edge after linear/adaptive pass |
-| Quality presets | Fast / Balanced / Accurate chips | Sets rays × samples |
-| Analysis session save | Auto after calculate | `filesDir/last_session.json` |
-| Horizon line helper | `HorizonLineCalculator` | High-quality outer ring |
+| Feature | Status | Notes |
+|---|---|---|
+| Fixed-grid radial visibility | Working | Preserves visible and hidden cells along every ray |
+| Parallel rays | Working | Coroutine per ray on `Dispatchers.Default` |
+| Quality presets | Working | Sets ray and radial sample density |
+| Earth curvature + refraction | Working | Effective-Earth-radius spherical calculation |
+| Target height | Working | Applied to candidate targets, not intervening terrain |
+| Real elevation integrity | Working | Real mode fails clearly instead of mixing demo terrain |
+| Analysis session save | Working | Stores outer extent, ranges, and visible sectors |
+| GeoJSON / KML | Working | Exports sampled visible sectors as multipolygons |
 
-## Optional native (does not block build)
+## Disabled correctness hazards
 
-- `app/src/main/cpp/viewshed_vulkan.cpp` — experimental Vulkan bridge
-- `VulkanViewshed` loads library only if present; **never** crashes on missing NDK
-- Default Gradle build does **not** require NDK/CMake
+- Adaptive sampling is disabled because its generated locations were not part of the
+  prefetched elevation grid and silently received demo elevations.
+- Binary-search horizon is disabled because visibility over real terrain is not a
+  monotonic true/false function. A farther peak can be visible behind a hidden valley.
 
-Enable native later with a dedicated product flavor or `-PenableVulkanNative=true` (wire when ready).
+These options remain in the parameter model only so older saved sessions can still load.
 
-## Not merged from broken roadmap branch
+## Optional native path
 
-LiDAR / ARCore / metal-detector scaffolding on `feature/complete-high-impact-roadmap` was largely incomplete and broke builds. Kept on that branch for reference; not in `main`.
+- `app/src/main/cpp/viewshed_vulkan.cpp` remains experimental.
+- `VulkanViewshed` loads the library only when present.
+- The production calculation continues to use the tested CPU engine.
+
+## Accuracy boundary
+
+The result is a sampled bare-earth terrain viewshed. It does not include buildings,
+trees, or other surface obstructions unless their heights are supplied by a future
+DSM/local DEM source. Increasing rays and samples reduces gaps but cannot add details
+that are absent from the elevation source.

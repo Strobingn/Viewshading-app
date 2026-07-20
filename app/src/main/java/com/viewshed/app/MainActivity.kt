@@ -43,6 +43,7 @@ import com.viewshed.app.databinding.ActivityMainBinding
 import com.viewshed.app.viewshed.AnalysisPreset
 import com.viewshed.app.viewshed.AnalysisSession
 import com.viewshed.app.viewshed.AnalysisSessionManager
+import com.viewshed.app.viewshed.ElevationDataException
 import com.viewshed.app.viewshed.ElevationRepository
 import com.viewshed.app.viewshed.GeoExport
 import com.viewshed.app.viewshed.GeoPoint
@@ -222,6 +223,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.chipQualityLow.setOnClickListener { applyQuality(SampleQuality.LOW) }
         binding.chipQualityMed.setOnClickListener { applyQuality(SampleQuality.MEDIUM) }
         binding.chipQualityHigh.setOnClickListener { applyQuality(SampleQuality.HIGH) }
+
+        // These modes previously sampled missing elevations and assumed visibility
+        // became permanently hidden after the first obstruction.
+        binding.switchAdaptive.isChecked = false
+        binding.switchAdaptive.isEnabled = false
+        binding.switchBinaryHorizon.isChecked = false
+        binding.switchBinaryHorizon.isEnabled = false
     }
 
     private fun applyQuality(q: SampleQuality) {
@@ -513,8 +521,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         useCurvature = binding.switchCurvature.isChecked,
         refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13,
         parallelRays = binding.switchParallel.isChecked,
-        adaptiveSampling = binding.switchAdaptive.isChecked,
-        binarySearchHorizon = binding.switchBinaryHorizon.isChecked,
+        adaptiveSampling = false,
+        binarySearchHorizon = false,
         quality = selectedQuality()
     ).sanitized()
 
@@ -572,7 +580,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                 results.addAll(newResults)
                 showStats(results)
-                setExportEnabled(results.any { it.boundary.size >= 3 })
+                setExportEnabled(results.any { it.visibleSectors.isNotEmpty() })
                 newResults.lastOrNull()?.let { last ->
                     try {
                         val file = java.io.File(filesDir, "last_session.json")
@@ -583,9 +591,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
                 val mode = if (params.useDemoTerrain) "demo" else "elevation API"
                 toast("Viewshed ready — ${results.size} observer(s) · $mode")
+            } catch (e: ElevationDataException) {
+                Log.e(TAG, "Real elevation unavailable", e)
+                toast(e.message ?: "Real elevation unavailable. No fake terrain was substituted.")
             } catch (e: Exception) {
                 Log.e(TAG, "Calculation error", e)
-                toast("Error: ${e.message ?: e.javaClass.simpleName}")
+                toast("Calculation failed: ${e.message ?: e.javaClass.simpleName}")
             } finally {
                 setCalculating(false)
             }
@@ -593,19 +604,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun drawResult(result: ViewshedResult, colorIndex: Int) {
-        if (result.boundary.size < 3) return
+        if (result.visibleSectors.isEmpty()) return
         try {
             val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
             val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
-            val poly = map.addPolygon(
-                PolygonOptions()
-                    .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
-                    .fillColor(fill)
-                    .strokeColor(stroke)
-                    .strokeWidth(3f)
-                    .geodesic(true)
-            )
-            polygons.add(poly)
+            result.visibleSectors.forEach { sector ->
+                val polygon = map.addPolygon(
+                    PolygonOptions()
+                        .addAll(sector.boundary.map { LatLng(it.lat, it.lon) })
+                        .fillColor(fill)
+                        .strokeColor(stroke)
+                        .strokeWidth(0f)
+                        .geodesic(true)
+                )
+                polygons.add(polygon)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "drawResult", e)
         }
@@ -621,7 +634,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val area = list.sumOf { it.stats.areaKm2 }
         val rays = list.sumOf { it.stats.numRays }
         binding.tvStats.visibility = View.VISIBLE
-        binding.tvStats.text = getString(R.string.stats_format, maxKm, avgKm, area, rays)
+        val format = if (list.size > 1) {
+            R.string.stats_multi_format
+        } else {
+            R.string.stats_format
+        }
+        binding.tvStats.text = getString(format, maxKm, avgKm, area, rays)
     }
 
     private fun searchPlace() {
