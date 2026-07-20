@@ -5,15 +5,17 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlin.math.max
-import kotlin.math.min
 
 /**
- * Radial line-of-sight viewshed (max elevation-angle, first continuous occlusion).
+ * Fixed-grid radial viewshed using a terrain-horizon test for every sample cell.
+ *
+ * Terrain angles update the obstruction horizon. Target height is applied only to the
+ * candidate target, never to intervening terrain. Every visible/invisible cell is retained,
+ * so a visible peak beyond a hidden valley is represented without filling the valley.
  */
 object ViewshedEngine {
 
-    private const val ANGLE_EPS = 1e-10
+    private const val ANGLE_EPSILON = 1e-12
 
     suspend fun compute(
         observer: GeoPoint,
@@ -21,53 +23,62 @@ object ViewshedEngine {
         elevations: ElevationGrid,
         onRayProgress: (suspend (done: Int, total: Int) -> Unit)? = null
     ): ViewshedResult = withContext(Dispatchers.Default) {
-        val p = params.sanitized()
-        val maxDistM = p.maxDistKm * 1000.0
+        val sanitizedParams = params.sanitized()
+        val maxDistanceM = sanitizedParams.maxDistKm * 1000.0
         val observerGround = elevations.elevation(observer)
-        val eyeElev = observerGround + p.eyeHeightM
+        val eyeElevation = observerGround + sanitizedParams.eyeHeightM
 
-        val ranges: List<Double> = if (p.parallelRays && p.numRays >= 16) {
+        val rays = if (sanitizedParams.parallelRays && sanitizedParams.numRays >= 16) {
             coroutineScope {
-                (0 until p.numRays).map { i ->
+                (0 until sanitizedParams.numRays).map { rayIndex ->
                     async {
-                        val bearing = i * 360.0 / p.numRays
-                        sampleRay(observer, bearing, eyeElev, maxDistM, p, elevations)
+                        val bearing = rayIndex * 360.0 / sanitizedParams.numRays
+                        sampleRay(
+                            observer = observer,
+                            bearing = bearing,
+                            eyeElevation = eyeElevation,
+                            maxDistanceM = maxDistanceM,
+                            params = sanitizedParams,
+                            elevations = elevations
+                        )
                     }
                 }.awaitAll()
             }.also {
-                onRayProgress?.invoke(p.numRays, p.numRays)
+                onRayProgress?.invoke(sanitizedParams.numRays, sanitizedParams.numRays)
             }
         } else {
-            val out = ArrayList<Double>(p.numRays)
-            for (i in 0 until p.numRays) {
-                val bearing = i * 360.0 / p.numRays
-                out.add(sampleRay(observer, bearing, eyeElev, maxDistM, p, elevations))
-                onRayProgress?.invoke(i + 1, p.numRays)
+            val output = ArrayList<VisibilityRay>(sanitizedParams.numRays)
+            for (rayIndex in 0 until sanitizedParams.numRays) {
+                val bearing = rayIndex * 360.0 / sanitizedParams.numRays
+                output.add(
+                    sampleRay(
+                        observer = observer,
+                        bearing = bearing,
+                        eyeElevation = eyeElevation,
+                        maxDistanceM = maxDistanceM,
+                        params = sanitizedParams,
+                        elevations = elevations
+                    )
+                )
+                onRayProgress?.invoke(rayIndex + 1, sanitizedParams.numRays)
             }
-            out
+            output
         }
 
-        val boundary = ArrayList<GeoPoint>(p.numRays + 1)
-        for (i in 0 until p.numRays) {
-            val bearing = i * 360.0 / p.numRays
-            val dist = ranges[i]
-            if (dist > 1.0) {
-                boundary.add(GeoMath.destination(observer, bearing, dist))
-            } else {
-                // Tiny offset so polygon is not degenerate when range ~ 0
-                boundary.add(GeoMath.destination(observer, bearing, 1.0))
-            }
-        }
-        if (boundary.isNotEmpty()) boundary.add(boundary.first())
-
-        val positive = ranges.filter { it > 0.0 }
+        val ranges = rays.map { it.farthestVisibleM }
+        val boundary = buildOuterExtent(observer, rays)
+        val sectors = buildVisibleSectors(observer, rays, sanitizedParams)
+        val positiveRanges = ranges.filter { it > 0.0 }
+        val visibleCells = sectors.sumOf { it.visibleCellCount }
         val stats = ViewshedStats(
             boundaryPoints = boundary.size,
             maxRangeM = ranges.maxOrNull() ?: 0.0,
-            avgRangeM = if (positive.isEmpty()) 0.0 else positive.average(),
-            areaKm2 = GeoMath.polygonAreaKm2(boundary),
-            numRays = p.numRays,
-            samplesPerRay = p.samplesPerRay
+            avgRangeM = positiveRanges.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+            areaKm2 = sectors.sumOf { it.areaM2 } / 1_000_000.0,
+            numRays = sanitizedParams.numRays,
+            samplesPerRay = sanitizedParams.samplesPerRay,
+            visibleCells = visibleCells,
+            totalCells = sanitizedParams.numRays * sanitizedParams.samplesPerRay
         )
 
         ViewshedResult(
@@ -75,169 +86,182 @@ object ViewshedEngine {
             boundary = boundary,
             rangesM = ranges,
             stats = stats,
-            params = p
+            params = sanitizedParams,
+            visibilityRays = rays,
+            visibleSectors = sectors
         )
     }
 
     private fun sampleRay(
         observer: GeoPoint,
         bearing: Double,
-        eyeElev: Double,
-        maxDistM: Double,
-        p: ViewshedParams,
+        eyeElevation: Double,
+        maxDistanceM: Double,
+        params: ViewshedParams,
         elevations: ElevationGrid
-    ): Double {
-        val raw = if (p.adaptiveSampling) {
-            adaptiveSampleRay(observer, bearing, eyeElev, maxDistM, p, elevations)
-        } else {
-            linearSampleRay(observer, bearing, eyeElev, maxDistM, p, elevations)
-        }
-        val hidden = raw.firstHidden
-        return if (p.binarySearchHorizon && raw.lastVisible > 0.0 && hidden != null) {
-            refineFirstOcclusion(
-                observer, bearing, eyeElev, raw.lastVisible, hidden, p, elevations
+    ): VisibilityRay {
+        val samples = ArrayList<VisibilitySample>(params.samplesPerRay)
+        val stepM = maxDistanceM / params.samplesPerRay
+        var maxTerrainAngle = Double.NEGATIVE_INFINITY
+        var farthestVisibleM = 0.0
+
+        for (sampleIndex in 1..params.samplesPerRay) {
+            val distanceM = sampleIndex * stepM
+            val point = GeoMath.destination(observer, bearing, distanceM)
+            val groundElevation = elevations.elevation(point)
+            val terrainAngle = GeoMath.elevationAngleRad(
+                observerElev = eyeElevation,
+                targetElev = groundElevation,
+                distM = distanceM,
+                useCurvature = params.useCurvature,
+                refractionCoeff = params.refraction
             )
-        } else {
-            raw.lastVisible
-        }
-    }
+            val targetAngle = GeoMath.elevationAngleRad(
+                observerElev = eyeElevation,
+                targetElev = groundElevation + params.targetHeightM,
+                distM = distanceM,
+                useCurvature = params.useCurvature,
+                refractionCoeff = params.refraction
+            )
 
-    private data class RayHit(val lastVisible: Double, val firstHidden: Double?)
+            val visible = targetAngle >= maxTerrainAngle - ANGLE_EPSILON
+            if (visible) {
+                farthestVisibleM = distanceM
+            }
 
-    private fun linearSampleRay(
-        observer: GeoPoint,
-        bearing: Double,
-        eyeElev: Double,
-        maxDistM: Double,
-        p: ViewshedParams,
-        elevations: ElevationGrid
-    ): RayHit {
-        var horizonAngle = Double.NEGATIVE_INFINITY
-        var lastVisible = 0.0
-        val samples = p.samplesPerRay
+            samples.add(
+                VisibilitySample(
+                    point = point,
+                    distanceM = distanceM,
+                    terrainElevationM = groundElevation,
+                    terrainAngleRad = terrainAngle,
+                    targetAngleRad = targetAngle,
+                    visible = visible
+                )
+            )
 
-        for (s in 1..samples) {
-            val distM = s * maxDistM / samples
-            val angle = elevAngle(observer, bearing, distM, eyeElev, p, elevations)
-            if (angle > horizonAngle + ANGLE_EPS) {
-                horizonAngle = angle
-                lastVisible = distM
-            } else {
-                return RayHit(lastVisible, distM)
+            // Only physical terrain becomes an obstruction for later targets.
+            if (terrainAngle > maxTerrainAngle) {
+                maxTerrainAngle = terrainAngle
             }
         }
-        return RayHit(lastVisible, null)
-    }
 
-    /**
-     * Adaptive steps only on the same distance lattice as [samplePoints]
-     * (integer sample indices) so elevation pre-fetch keys always hit.
-     */
-    private fun adaptiveSampleRay(
-        observer: GeoPoint,
-        bearing: Double,
-        eyeElev: Double,
-        maxDistM: Double,
-        p: ViewshedParams,
-        elevations: ElevationGrid
-    ): RayHit {
-        var horizonAngle = Double.NEGATIVE_INFINITY
-        var lastVisible = 0.0
-        val samples = p.samplesPerRay
-        var s = 1
-        var stride = 1
-        var prevAngle = Double.NaN
-
-        while (s <= samples) {
-            val distM = s * maxDistM / samples
-            val angle = elevAngle(observer, bearing, distM, eyeElev, p, elevations)
-            if (angle > horizonAngle + ANGLE_EPS) {
-                horizonAngle = angle
-                lastVisible = distM
-                if (!prevAngle.isNaN()) {
-                    val delta = kotlin.math.abs(angle - prevAngle)
-                    stride = when {
-                        delta > 0.008 -> 1
-                        delta < 0.0015 -> min(4, stride + 1)
-                        else -> stride
-                    }
-                }
-                prevAngle = angle
-                s += stride
-            } else {
-                return RayHit(lastVisible, distM)
-            }
-        }
-        return RayHit(lastVisible, null)
-    }
-
-    private fun refineFirstOcclusion(
-        observer: GeoPoint,
-        bearing: Double,
-        eyeElev: Double,
-        lastVisible: Double,
-        firstHidden: Double,
-        p: ViewshedParams,
-        elevations: ElevationGrid
-    ): Double {
-        if (firstHidden <= lastVisible) return lastVisible
-
-        var horizonAngle = Double.NEGATIVE_INFINITY
-        val seedSteps = max(4, p.samplesPerRay / 5)
-        for (s in 1..seedSteps) {
-            val d = s * lastVisible / seedSteps
-            if (d <= 0.0) continue
-            val a = elevAngle(observer, bearing, d, eyeElev, p, elevations)
-            if (a > horizonAngle + ANGLE_EPS) horizonAngle = a
-        }
-
-        var lo = lastVisible
-        var hi = firstHidden
-        repeat(14) {
-            val mid = (lo + hi) / 2.0
-            val a = elevAngle(observer, bearing, mid, eyeElev, p, elevations)
-            if (a > horizonAngle + ANGLE_EPS) {
-                lo = mid
-                horizonAngle = a
-            } else {
-                hi = mid
-            }
-        }
-        return lo
-    }
-
-    private fun elevAngle(
-        observer: GeoPoint,
-        bearing: Double,
-        distM: Double,
-        eyeElev: Double,
-        p: ViewshedParams,
-        elevations: ElevationGrid
-    ): Double {
-        val target = GeoMath.destination(observer, bearing, distM)
-        val ground = elevations.elevation(target)
-        val targetElev = ground + p.targetHeightM
-        return GeoMath.elevationAngleRad(
-            observerElev = eyeElev,
-            targetElev = targetElev,
-            distM = distM,
-            useCurvature = p.useCurvature,
-            refractionCoeff = p.refraction
+        return VisibilityRay(
+            bearingDeg = bearing,
+            samples = samples,
+            farthestVisibleM = farthestVisibleM
         )
     }
 
-    fun samplePoints(observer: GeoPoint, params: ViewshedParams): List<GeoPoint> {
-        val p = params.sanitized()
-        val maxDistM = p.maxDistKm * 1000.0
-        val out = ArrayList<GeoPoint>(p.numRays * p.samplesPerRay + 1)
-        out.add(observer)
-        for (i in 0 until p.numRays) {
-            val bearing = i * 360.0 / p.numRays
-            for (s in 1..p.samplesPerRay) {
-                val distM = s * maxDistM / p.samplesPerRay
-                out.add(GeoMath.destination(observer, bearing, distM))
+    private fun buildOuterExtent(
+        observer: GeoPoint,
+        rays: List<VisibilityRay>
+    ): List<GeoPoint> {
+        val boundary = ArrayList<GeoPoint>(rays.size + 1)
+        rays.forEach { ray ->
+            boundary.add(
+                if (ray.farthestVisibleM > 0.0) {
+                    GeoMath.destination(observer, ray.bearingDeg, ray.farthestVisibleM)
+                } else {
+                    observer
+                }
+            )
+        }
+        if (boundary.isNotEmpty()) {
+            boundary.add(boundary.first())
+        }
+        return boundary
+    }
+
+    private fun buildVisibleSectors(
+        observer: GeoPoint,
+        rays: List<VisibilityRay>,
+        params: ViewshedParams
+    ): List<VisibleSector> {
+        val sectors = mutableListOf<VisibleSector>()
+        val maxDistanceM = params.maxDistKm * 1000.0
+        val radialStepM = maxDistanceM / params.samplesPerRay
+        val bearingWidthDeg = 360.0 / params.numRays
+        val halfBearingWidth = bearingWidthDeg / 2.0
+
+        rays.forEach { ray ->
+            var runStart = -1
+            for (index in 0..ray.samples.size) {
+                val isVisible = index < ray.samples.size && ray.samples[index].visible
+                if (isVisible && runStart < 0) {
+                    runStart = index
+                }
+                if (!isVisible && runStart >= 0) {
+                    val innerDistanceM = runStart * radialStepM
+                    val outerDistanceM = index * radialStepM
+                    val bearingStart = GeoMath.clampBearing(
+                        ray.bearingDeg - halfBearingWidth
+                    )
+                    val bearingEnd = GeoMath.clampBearing(
+                        ray.bearingDeg + halfBearingWidth
+                    )
+                    sectors.add(
+                        VisibleSector(
+                            bearingStartDeg = bearingStart,
+                            bearingEndDeg = bearingEnd,
+                            innerDistanceM = innerDistanceM,
+                            outerDistanceM = outerDistanceM,
+                            visibleCellCount = index - runStart,
+                            areaM2 = GeoMath.annularSectorAreaM2(
+                                innerDistanceM = innerDistanceM,
+                                outerDistanceM = outerDistanceM,
+                                bearingWidthDeg = bearingWidthDeg
+                            ),
+                            boundary = sectorBoundary(
+                                observer = observer,
+                                bearingStartDeg = bearingStart,
+                                bearingEndDeg = bearingEnd,
+                                innerDistanceM = innerDistanceM,
+                                outerDistanceM = outerDistanceM
+                            )
+                        )
+                    )
+                    runStart = -1
+                }
             }
         }
-        return out
+        return sectors
+    }
+
+    private fun sectorBoundary(
+        observer: GeoPoint,
+        bearingStartDeg: Double,
+        bearingEndDeg: Double,
+        innerDistanceM: Double,
+        outerDistanceM: Double
+    ): List<GeoPoint> {
+        val outerStart = GeoMath.destination(observer, bearingStartDeg, outerDistanceM)
+        val outerEnd = GeoMath.destination(observer, bearingEndDeg, outerDistanceM)
+        if (innerDistanceM <= 0.0) {
+            return listOf(observer, outerStart, outerEnd, observer)
+        }
+
+        val innerStart = GeoMath.destination(observer, bearingStartDeg, innerDistanceM)
+        val innerEnd = GeoMath.destination(observer, bearingEndDeg, innerDistanceM)
+        return listOf(innerStart, outerStart, outerEnd, innerEnd, innerStart)
+    }
+
+    /** Every point required by [compute]; real-mode calculations must resolve all of them. */
+    fun samplePoints(observer: GeoPoint, params: ViewshedParams): List<GeoPoint> {
+        val sanitizedParams = params.sanitized()
+        val maxDistanceM = sanitizedParams.maxDistKm * 1000.0
+        val output = ArrayList<GeoPoint>(
+            sanitizedParams.numRays * sanitizedParams.samplesPerRay + 1
+        )
+        output.add(observer)
+        for (rayIndex in 0 until sanitizedParams.numRays) {
+            val bearing = rayIndex * 360.0 / sanitizedParams.numRays
+            for (sampleIndex in 1..sanitizedParams.samplesPerRay) {
+                val distanceM = sampleIndex * maxDistanceM /
+                    sanitizedParams.samplesPerRay
+                output.add(GeoMath.destination(observer, bearing, distanceM))
+            }
+        }
+        return output
     }
 }
