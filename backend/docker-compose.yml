@@ -1,11 +1,14 @@
+# version required by Ubuntu 20.04 docker-compose 1.x
+version: "3.3"
+
 services:
   viewshed-backend:
     build: .
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data          # optional: drop DEM files here
-      - ./uploads:/app/uploads    # uploaded DEMs land here
+      - ./data:/app/data
+      - ./uploads:/app/uploads
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
