@@ -72,6 +72,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // NGA TIFF is designed for Android and decodes strips/tiles with raw, LZW,
+    // Deflate, and PackBits compression. GeoTIFF georeferencing is parsed locally.
+    implementation("mil.nga:tiff:3.0.0")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
