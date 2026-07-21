@@ -71,13 +71,20 @@
                     app:iconTint="?attr/colorOnSurface" />
             </LinearLayout>
 
-            <com.google.android.material.chip.ChipGroup
-                android:id="@+id/chipMapType"
+            <HorizontalScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                app:selectionRequired="true"
-                app:singleSelection="true">
+                android:fillViewport="false"
+                android:scrollbars="none">
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chipMapType"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:selectionRequired="true"
+                    app:singleLine="true"
+                    app:singleSelection="true">
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/chipHybrid"
@@ -107,7 +114,8 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/map_normal" />
-            </com.google.android.material.chip.ChipGroup>
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
@@ -115,7 +123,7 @@
     <LinearLayout
         android:id="@+id/fabColumn"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_height="match_parent"
         android:layout_gravity="end|bottom"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="220dp"
@@ -164,7 +172,9 @@
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="10dp"
             android:layout_marginBottom="6dp"
-            android:background="#66FFFFFF" />
+            android:contentDescription="@string/expand_controls"
+            android:focusable="true"
+            android:background="?attr/colorOutline" />
 
         <TextView
             android:id="@+id/tvHint"
@@ -300,10 +310,10 @@
         <androidx.core.widget.NestedScrollView
             android:id="@+id/sheetScroll"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="0dp"
+            android:layout_weight="1"
             android:clipToPadding="false"
-            android:fillViewport="false"
-            android:maxHeight="420dp"
+            android:fillViewport="true"
             android:overScrollMode="ifContentScrolls">
 
             <LinearLayout
@@ -314,7 +324,7 @@
                 android:paddingHorizontal="12dp"
                 android:paddingBottom="24dp">
 
-                <!-- Integer cm steps avoid Material float stepSize bugs -->
+                <!-- Integer tenths of a metre avoid float step-size drift. -->
                 <com.google.android.material.slider.Slider
                     android:id="@+id/sliderViewerHeight"
                     android:layout_width="match_parent"
@@ -566,20 +576,6 @@
                     android:layout_height="wrap_content"
                     android:checked="true"
                     android:text="@string/include_curvature" />
-
-                <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/switchAdaptive"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:checked="false"
-                    android:text="@string/adaptive_sampling" />
-
-                <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/switchBinaryHorizon"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:checked="false"
-                    android:text="@string/binary_horizon" />
 
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchParallel"

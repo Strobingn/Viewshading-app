@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import java.io.File
 import java.util.UUID
 import kotlin.math.cos
+import kotlin.math.sqrt
 
 /**
  * Phase 1 — Offline elevation packs for field use.
@@ -102,11 +103,13 @@ class OfflineMapCache(context: Context) {
     /**
      * Lookup elevation from the best covering pack (exact key then nearest sample).
      */
-    fun elevation(point: GeoPoint, maxNeighborM: Double = 120.0): Double? {
+    fun elevation(point: GeoPoint, maxNeighborM: Double? = null): Double? {
         val pack = findCovering(point) ?: return null
         pack.elevations[point.key()]?.let { return it }
         pack.elevations[point.key(5)]?.let { return it }
 
+        val inferredSpacingM = pack.radiusKm * 2_000.0 / sqrt(pack.sampleCount.toDouble()).coerceAtLeast(2.0)
+        val neighborLimitM = maxNeighborM ?: inferredSpacingM
         var best = Double.MAX_VALUE
         var bestElev: Double? = null
         val latScale = 111_320.0
@@ -119,7 +122,7 @@ class OfflineMapCache(context: Context) {
             val dy = (lat - point.lat) * latScale
             val dx = (lon - point.lon) * lonScale
             val d = kotlin.math.sqrt(dx * dx + dy * dy)
-            if (d < best && d <= maxNeighborM) {
+            if (d < best && d <= neighborLimitM) {
                 best = d
                 bestElev = elev
             }

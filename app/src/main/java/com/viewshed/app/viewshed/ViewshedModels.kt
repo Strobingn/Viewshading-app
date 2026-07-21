@@ -9,38 +9,65 @@ data class ViewshedParams(
     val useDemoTerrain: Boolean = true,
     val useCurvature: Boolean = true,
     val refraction: Double = 0.13,
-    /** Parallel rays on Default dispatcher (experimental performance). */
     val parallelRays: Boolean = true,
-    /** Adaptive step size along ray based on slope change. */
+    /** Retained for saved-session compatibility; fixed-grid analysis disables it. */
     val adaptiveSampling: Boolean = false,
-    /** Coarse linear pass + binary search to refine horizon distance. */
+    /** Retained for saved-session compatibility; terrain visibility is not monotonic. */
     val binarySearchHorizon: Boolean = false,
-    val quality: SampleQuality = SampleQuality.MEDIUM
+    val quality: SampleQuality = SampleQuality.MEDIUM,
 ) {
-    fun sanitized(): ViewshedParams = copy(
-        eyeHeightM = eyeHeightM.coerceIn(0.0, 100.0),
-        targetHeightM = targetHeightM.coerceIn(0.0, 200.0),
-        maxDistKm = maxDistKm.coerceIn(0.1, 50.0),
-        numRays = numRays.coerceIn(8, 360),
-        samplesPerRay = samplesPerRay.coerceIn(10, 250),
-        refraction = refraction.coerceIn(0.0, 1.0)
-    )
+    fun sanitized(): ViewshedParams =
+        copy(
+            eyeHeightM = eyeHeightM.coerceIn(0.0, 100.0),
+            targetHeightM = targetHeightM.coerceIn(0.0, 200.0),
+            maxDistKm = maxDistKm.coerceIn(0.1, 50.0),
+            numRays = numRays.coerceIn(8, 360),
+            samplesPerRay = samplesPerRay.coerceIn(10, 250),
+            refraction = refraction.coerceIn(0.0, 0.25),
+            adaptiveSampling = false,
+            binarySearchHorizon = false,
+        )
 
-    fun withQuality(q: SampleQuality): ViewshedParams = copy(
-        quality = q,
-        numRays = q.rays,
-        samplesPerRay = q.samples
-    )
+    fun withQuality(q: SampleQuality): ViewshedParams =
+        copy(
+            quality = q,
+            numRays = q.rays,
+            samplesPerRay = q.samples,
+        )
 }
 
-/**
- * Experimental quality presets (map to ray/sample density).
- */
 enum class SampleQuality(val label: String, val rays: Int, val samples: Int) {
     LOW("Fast", 36, 40),
     MEDIUM("Balanced", 72, 80),
-    HIGH("Accurate", 120, 120)
+    HIGH("Accurate", 120, 120),
 }
+
+/** Visibility of one terrain/target sample along a ray. */
+data class VisibilitySample(
+    val point: GeoPoint,
+    val distanceM: Double,
+    val terrainElevationM: Double,
+    val terrainAngleRad: Double,
+    val targetAngleRad: Double,
+    val visible: Boolean,
+)
+
+data class VisibilityRay(
+    val bearingDeg: Double,
+    val samples: List<VisibilitySample>,
+    val farthestVisibleM: Double,
+)
+
+/** One contiguous visible run within a ray's angular wedge. */
+data class VisibleSector(
+    val bearingStartDeg: Double,
+    val bearingEndDeg: Double,
+    val innerDistanceM: Double,
+    val outerDistanceM: Double,
+    val visibleCellCount: Int,
+    val areaM2: Double,
+    val boundary: List<GeoPoint>,
+)
 
 data class ViewshedStats(
     val boundaryPoints: Int,
@@ -48,7 +75,9 @@ data class ViewshedStats(
     val avgRangeM: Double,
     val areaKm2: Double,
     val numRays: Int,
-    val samplesPerRay: Int
+    val samplesPerRay: Int,
+    val visibleCells: Int = 0,
+    val totalCells: Int = 0,
 ) {
     val maxRangeKm: Double get() = maxRangeM / 1000.0
     val avgRangeKm: Double get() = avgRangeM / 1000.0
@@ -56,10 +85,13 @@ data class ViewshedStats(
 
 data class ViewshedResult(
     val observer: GeoPoint,
+    /** Outer extent for navigation; [visibleSectors] is the actual visible mask. */
     val boundary: List<GeoPoint>,
     val rangesM: List<Double>,
     val stats: ViewshedStats,
-    val params: ViewshedParams
+    val params: ViewshedParams,
+    val visibilityRays: List<VisibilityRay> = emptyList(),
+    val visibleSectors: List<VisibleSector> = emptyList(),
 )
 
 enum class AnalysisPreset(
@@ -68,7 +100,7 @@ enum class AnalysisPreset(
     val targetHeightM: Double,
     val maxDistKm: Double,
     val numRays: Int,
-    val samples: Int
+    val samples: Int,
 ) {
     TREE_STAND("Tree stand", 5.0, 1.0, 1.5, 90, 60),
     KAYAK("Kayak 2 km", 1.2, 0.5, 2.0, 72, 70),
@@ -82,6 +114,6 @@ enum class AnalysisPreset(
             maxDistKm = maxDistKm,
             numRays = numRays,
             samplesPerRay = samples,
-            quality = SampleQuality.MEDIUM
+            quality = SampleQuality.MEDIUM,
         )
 }

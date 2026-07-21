@@ -17,7 +17,9 @@
     <string name="use_demo_terrain">Demo terrain (offline)</string>
     <string name="include_curvature">Earth curvature + refraction</string>
     <string name="refraction_coeff">Refraction coefficient</string>
-    <string name="long_press_hint">Long-press map to place observer · drag sheet up for params</string>
+    <string name="long_press_hint">Long-press map to place observer · tap or drag up for options</string>
+    <string name="expand_controls">Expand analysis controls</string>
+    <string name="no_maps_key_hint">Demo terrain is ready · add a Maps key to load map tiles</string>
     <string name="export_geojson">GeoJSON</string>
     <string name="export_kml">KML</string>
     <string name="clear">Clear</string>

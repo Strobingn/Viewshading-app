@@ -45,8 +45,14 @@ jobs:
             echo "MAPS_API_KEY secret was injected into secrets.properties"
           fi
 
+      - name: Run backend regression tests
+        run: python3 -m unittest discover -s backend/tests -v
+
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Run Android lint
+        run: ./gradlew lintDebug --stacktrace --no-daemon
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace --no-daemon

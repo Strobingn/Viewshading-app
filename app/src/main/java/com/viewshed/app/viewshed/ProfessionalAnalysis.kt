@@ -109,6 +109,25 @@ object ProfessionalAnalysis {
         )
     }
 
+    /** Exact elevation points consumed by [intervisibility]. */
+    fun intervisibilitySamplePoints(
+        from: GeoPoint,
+        to: GeoPoint,
+        samples: Int = 80,
+    ): List<GeoPoint> {
+        val distanceM = GeoMath.distanceM(from, to)
+        if (distanceM < 1.0) return listOf(from, to).distinctBy { it.key() }
+        val bearing = GeoMath.bearingDeg(from, to)
+        val count = samples.coerceIn(8, 250)
+        return buildList(count + 1) {
+            add(from)
+            for (index in 1 until count) {
+                add(GeoMath.destination(from, bearing, distanceM * index / count))
+            }
+            add(to)
+        }.distinctBy { it.key() }
+    }
+
     // --- Point-in-viewshed using radial ranges ---
 
     fun isVisibleInViewshed(result: ViewshedResult, point: GeoPoint): Boolean {
@@ -118,6 +137,13 @@ object ProfessionalAnalysis {
         if (dist > maxM * 1.001) return false
         if (dist < 1.0) return true
         val bearing = GeoMath.bearingDeg(result.observer, point)
+        if (result.visibleSectors.isNotEmpty()) {
+            return result.visibleSectors.any { sector ->
+                bearingInSector(bearing, sector.bearingStartDeg, sector.bearingEndDeg) &&
+                    dist >= sector.innerDistanceM - 1.0 &&
+                    dist <= sector.outerDistanceM + 1.0
+            }
+        }
         val ranges = result.rangesM
         if (ranges.isEmpty()) return false
         val n = ranges.size
@@ -127,6 +153,17 @@ object ProfessionalAnalysis {
         val t = idxF - idxF.toInt()
         val range = ranges[i0] * (1 - t) + ranges[i1] * t
         return dist <= range + 1.0
+    }
+
+    private fun bearingInSector(bearing: Double, start: Double, end: Double): Boolean {
+        val normalized = GeoMath.clampBearing(bearing)
+        val normalizedStart = GeoMath.clampBearing(start)
+        val normalizedEnd = GeoMath.clampBearing(end)
+        return if (normalizedStart <= normalizedEnd) {
+            normalized in normalizedStart..normalizedEnd
+        } else {
+            normalized >= normalizedStart || normalized <= normalizedEnd
+        }
     }
 
     // --- Visibility frequency / cumulative multi-observer ---
@@ -225,42 +262,71 @@ object ProfessionalAnalysis {
         useCurvature: Boolean = true,
         refraction: Double = 0.13
     ): PathVisibilityResult {
-        if (path.isEmpty()) {
+        if (path.size < 2) {
             return PathVisibilityResult(path, emptyList(), 0.0, 0.0, 0.0)
         }
-        val segs = ArrayList<Boolean>(path.size)
+        val pointVisibility =
+            path.map { point ->
+                intervisibility(
+                    from = observer,
+                    to = point,
+                    elevations = elevations,
+                    eyeHeightM = eyeHeightM,
+                    targetHeightM = targetHeightM,
+                    samples = samplesPerSegment,
+                    useCurvature = useCurvature,
+                    refraction = refraction,
+                ).visible
+            }
+        val segments = ArrayList<Boolean>(path.size - 1)
         var total = 0.0
         var visibleLen = 0.0
-        for (pt in path) {
-            val iv = intervisibility(
-                from = observer,
-                to = pt,
-                elevations = elevations,
-                eyeHeightM = eyeHeightM,
-                targetHeightM = targetHeightM,
-                samples = samplesPerSegment,
-                useCurvature = useCurvature,
-                refraction = refraction
-            )
-            segs.add(iv.visible)
-            total += iv.distanceM
-            if (iv.visible) visibleLen += iv.distanceM
-        }
-        // Also check consecutive path segments
         for (i in 0 until path.size - 1) {
             val a = path[i]
             val b = path[i + 1]
             val segLen = GeoMath.distanceM(a, b)
             total += segLen
             val mid = GeoMath.destination(a, GeoMath.bearingDeg(a, b), segLen / 2)
-            val iv = intervisibility(
-                observer, mid, elevations, eyeHeightM, targetHeightM,
-                samplesPerSegment, useCurvature, refraction
-            )
-            if (iv.visible) visibleLen += segLen
+            val midpointVisible =
+                intervisibility(
+                    observer,
+                    mid,
+                    elevations,
+                    eyeHeightM,
+                    targetHeightM,
+                    samplesPerSegment,
+                    useCurvature,
+                    refraction,
+                ).visible
+            val visible = pointVisibility[i] && pointVisibility[i + 1] && midpointVisible
+            segments.add(visible)
+            if (visible) visibleLen += segLen
         }
         val frac = if (total > 0) (visibleLen / total).coerceIn(0.0, 1.0) else 0.0
-        return PathVisibilityResult(path, segs, frac, total, visibleLen)
+        return PathVisibilityResult(path, segments, frac, total, visibleLen)
+    }
+
+    /** Exact elevation points consumed by [pathVisibility]. */
+    fun pathVisibilitySamplePoints(
+        observer: GeoPoint,
+        path: List<GeoPoint>,
+        samplesPerSegment: Int = 24,
+    ): List<GeoPoint> {
+        if (path.isEmpty()) return listOf(observer)
+        val targets = path.toMutableList()
+        for (index in 0 until path.size - 1) {
+            val a = path[index]
+            val b = path[index + 1]
+            val distanceM = GeoMath.distanceM(a, b)
+            targets.add(
+                GeoMath.destination(a, GeoMath.bearingDeg(a, b), distanceM / 2.0),
+            )
+        }
+        return targets
+            .flatMap { target ->
+                intervisibilitySamplePoints(observer, target, samplesPerSegment)
+            }
+            .distinctBy { it.key() }
     }
 
     // --- Solar shadow / sun-direction terrain occlusion ---

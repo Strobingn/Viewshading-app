@@ -2,6 +2,7 @@ package com.viewshed.app.viewshed
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -51,35 +52,57 @@ class ViewshedEngineTest {
             "expected ~1000m, got ${result.stats.maxRangeM}",
             result.stats.maxRangeM > 950.0
         )
+        assertEquals(result.stats.totalCells, result.stats.visibleCells)
+        assertEquals(Math.PI, result.stats.areaKm2, 0.02)
     }
 
     @Test
-    fun ridge_stops_continuous_viewshed_before_far_peak() = runBlocking {
-        val observer = GeoPoint(0.0, 0.0)
+    fun target_height_is_not_used_as_an_intervening_obstacle() = runBlocking {
+        val observer = GeoPoint(41.5, -74.0)
         val params = ViewshedParams(
-            eyeHeightM = 1.0,
+            eyeHeightM = 1.7,
+            targetHeightM = 10.0,
             maxDistKm = 1.0,
             numRays = 8,
-            samplesPerRay = 40,
+            samplesPerRay = 20,
             useCurvature = false,
             parallelRays = false,
-            adaptiveSampling = false,
-            binarySearchHorizon = false
+        )
+        val result = ViewshedEngine.compute(observer, params, gridFrom(observer, params) { 0.0 })
+
+        assertEquals(1000.0, result.stats.maxRangeM, 0.01)
+        assertTrue(result.visibilityRays.all { ray -> ray.samples.all { it.visible } })
+    }
+
+    @Test
+    fun visible_peak_beyond_ridge_does_not_fill_hidden_valley() = runBlocking {
+        val observer = GeoPoint(0.0, 0.0)
+        val params = ViewshedParams(
+            eyeHeightM = 2.0,
+            maxDistKm = 1.0,
+            numRays = 8,
+            samplesPerRay = 10,
+            useCurvature = false,
+            parallelRays = false,
         )
         fun elev(p: GeoPoint): Double {
             val d = GeoMath.distanceM(observer, p)
             return when {
-                d in 200.0..350.0 -> 40.0
-                d in 650.0..800.0 -> 80.0
+                d in 250.0..350.0 -> 50.0
+                d >= 950.0 -> 200.0
                 else -> 0.0
             }
         }
         val grid = gridFrom(observer, params, ::elev)
         val result = ViewshedEngine.compute(observer, params, grid)
-        assertTrue(
-            "continuous range should stop near first ridge, got ${result.stats.maxRangeM}m",
-            result.stats.maxRangeM in 150.0..450.0
-        )
+        val firstRay = result.visibilityRays.first().samples
+
+        assertTrue(firstRay[2].visible)
+        (3..8).forEach { index -> assertFalse(firstRay[index].visible) }
+        assertTrue(firstRay[9].visible)
+        assertEquals(1000.0, result.stats.maxRangeM, 0.01)
+        assertEquals(2 * params.numRays, result.visibleSectors.size)
+        assertTrue(result.stats.visibleCells < result.stats.totalCells)
     }
 
     @Test
@@ -128,12 +151,29 @@ class ViewshedEngineTest {
     }
 
     @Test
-    fun nearest_neighbor_elev_used_off_lattice() {
+    fun missing_real_elevation_fails_closed() {
         val p0 = GeoPoint(41.5, -74.0)
         val map = mapOf(p0.key() to 123.0)
         val grid = ElevationGrid(map, useDemo = false)
         val nearby = GeoPoint(41.500001, -74.000001)
-        assertEquals(123.0, grid.elevation(nearby, maxNeighborM = 50.0), 0.01)
+        var failed = false
+        try {
+            grid.elevation(nearby)
+        } catch (_: ElevationDataException) {
+            failed = true
+        }
+        assertTrue("missing real elevation must not use a nearby or demo value", failed)
+    }
+
+    @Test
+    fun non_monotonic_horizon_options_are_disabled() {
+        val sanitized = ViewshedParams(
+            adaptiveSampling = true,
+            binarySearchHorizon = true,
+        ).sanitized()
+
+        assertFalse(sanitized.adaptiveSampling)
+        assertFalse(sanitized.binarySearchHorizon)
     }
 
     @Test

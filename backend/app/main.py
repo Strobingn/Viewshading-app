@@ -2,11 +2,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os
-import tempfile
 import shutil
-from typing import Optional
+import tempfile
+from pathlib import Path
 
-from .models import ViewshedRequest, ViewshedResponse, Observer
+from .models import ViewshedRequest, ViewshedResponse
 from .viewshed import compute_viewshed
 from .terrain_api import (
     ElevationSampleRequest,
@@ -31,8 +31,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = "/app/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = Path(
+    os.getenv(
+        "VIEWSHADE_UPLOAD_DIR",
+        str(Path(tempfile.gettempdir()) / "viewshade-uploads"),
+    )
+)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/")
@@ -78,6 +83,7 @@ def viewshed_json(req: ViewshedRequest):
         observer_lat=req.observer.lat,
         observer_lon=req.observer.lon,
         eye_height_m=req.observer.height_m,
+        target_height_m=req.target_height_m,
         max_distance_m=req.max_distance_m,
         num_rays=req.num_rays,
         samples_per_ray=req.samples_per_ray,
@@ -93,6 +99,7 @@ async def viewshed_with_dem(
     lat: float = Form(...),
     lon: float = Form(...),
     height_m: float = Form(1.6),
+    target_height_m: float = Form(0.0),
     max_distance_m: float = Form(5000.0),
     num_rays: int = Form(72),
     samples_per_ray: int = Form(80),
@@ -108,9 +115,15 @@ async def viewshed_with_dem(
     if suffix not in {".tif", ".tiff", ".asc", ".txt", ".xyz"}:
         raise HTTPException(400, "Supported formats: .tif, .tiff, .asc, .txt, .xyz")
 
-    # save upload
-    dest = os.path.join(UPLOAD_DIR, file.filename or "upload.dem")
-    with open(dest, "wb") as f:
+    # Keep client filenames out of the filesystem path and avoid collisions.
+    suffix = suffix if suffix else ".dem"
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        suffix=suffix,
+        prefix="dem_",
+        dir=UPLOAD_DIR,
+        delete=False,
+    ) as f:
         shutil.copyfileobj(file.file, f)
 
     # TODO: open with rasterio and sample real elevations
@@ -119,6 +132,7 @@ async def viewshed_with_dem(
         observer_lat=lat,
         observer_lon=lon,
         eye_height_m=height_m,
+        target_height_m=target_height_m,
         max_distance_m=max_distance_m,
         num_rays=num_rays,
         samples_per_ray=samples_per_ray,
