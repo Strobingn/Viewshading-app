@@ -98,6 +98,7 @@
     <string name="backend_url_hint">Backend URL (http://IP:8000)</string>
     <string name="backend_url_default">http://129.80.174.236:8000</string>
     <string name="btn_test_backend">Test backend</string>
+    <string name="btn_collaboration">Team projects · sync · comments · versions</string>
     <string name="btn_intervis">Intervis</string>
     <string name="btn_cumulative">Cumulative</string>
     <string name="btn_frequency">Frequency</string>
@@ -110,6 +111,7 @@
     <string name="btn_geotag_photo">Geotag photo</string>
     <string name="export_gpx">GPX</string>
     <string name="export_csv">CSV</string>
+    <string name="export_more">More exports: SHP · KMZ · image · QR · bundle</string>
     <string name="perf_idle">Perf: idle</string>
     <string name="add_favorite">Save favorite</string>
     <string name="favorite_name">Name this location</string>

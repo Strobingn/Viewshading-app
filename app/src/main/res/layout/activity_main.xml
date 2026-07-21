@@ -570,6 +570,13 @@
                     android:layout_height="wrap_content"
                     android:text="@string/btn_test_backend" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCollaboration"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/btn_collaboration" />
+
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchCurvature"
                     android:layout_width="match_parent"
@@ -1004,6 +1011,14 @@
                         android:enabled="false"
                         android:text="@string/export_csv" />
                 </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnExportMore"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:enabled="false"
+                    android:text="@string/export_more" />
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
     </LinearLayout>

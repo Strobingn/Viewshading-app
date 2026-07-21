@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.location.Geocoder
 import android.location.Location
@@ -21,6 +22,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -51,6 +53,7 @@ import com.viewshed.app.performance.PerformanceMonitor
 import com.viewshed.app.viewshed.AnalysisPreset
 import com.viewshed.app.viewshed.AnalysisSession
 import com.viewshed.app.viewshed.AnalysisSessionManager
+import com.viewshed.app.viewshed.AdvancedExport
 import com.viewshed.app.viewshed.CompassHelper
 import com.viewshed.app.viewshed.ElevationRepository
 import com.viewshed.app.viewshed.ElevationGrid
@@ -65,6 +68,7 @@ import com.viewshed.app.viewshed.RasterDemSource
 import com.viewshed.app.viewshed.OfflineMapCache
 import com.viewshed.app.viewshed.PhotoGeotagHelper
 import com.viewshed.app.viewshed.ProfessionalAnalysis
+import com.viewshed.app.viewshed.QrExport
 import com.viewshed.app.viewshed.SampleQuality
 import com.viewshed.app.viewshed.SessionHistory
 import com.viewshed.app.viewshed.BackendViewshedClient
@@ -82,6 +86,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -375,6 +380,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnExportKml.setOnClickListener { shareText(GeoExport.toKml(results), "application/vnd.google-earth.kml+xml", "Viewshed.kml") }
         binding.btnExportGpx.setOnClickListener { shareText(GeoExport.toGpx(results), "application/gpx+xml", "Viewshed.gpx") }
         binding.btnExportCsv.setOnClickListener { shareText(GeoExport.toCsv(results), "text/csv", "Viewshed.csv") }
+        binding.btnExportMore.setOnClickListener { showMoreExports() }
 
         binding.btnSearch.setOnClickListener { searchPlace() }
         binding.etSearch.setOnEditorActionListener { _, actionId, _ ->
@@ -945,6 +951,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
             }
         }
+        binding.btnCollaboration.setOnClickListener {
+            startActivity(Intent(this, CollaborationActivity::class.java))
+        }
         binding.switchCloudBackend.setOnCheckedChangeListener { _, checked ->
             prefs.edit().putBoolean("use_cloud_backend", checked).apply()
             binding.etBackendUrl.text?.toString()?.let {
@@ -1213,6 +1222,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnExportKml.isEnabled = enabled
         binding.btnExportGpx.isEnabled = enabled
         binding.btnExportCsv.isEnabled = enabled
+        binding.btnExportMore.isEnabled = enabled
     }
 
     private fun clearAnalysisOverlays() {
@@ -1595,6 +1605,88 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
+    }
+
+    private fun showMoreExports() {
+        if (results.isEmpty()) {
+            toast("Nothing to export.")
+            return
+        }
+        val labels = arrayOf(
+            "Shapefile package (.zip)",
+            "Google Earth KMZ",
+            "Current map image (PNG)",
+            "Portable analysis QR",
+            "Complete GIS bundle (.zip)",
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("More exports")
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> buildBinaryExport("Viewshed-shapefile.zip", "application/zip") {
+                        AdvancedExport.toShapefileZip(results)
+                    }
+                    1 -> buildBinaryExport("Viewshed.kmz", "application/vnd.google-earth.kmz") {
+                        AdvancedExport.toKmz(results)
+                    }
+                    2 -> exportMapSnapshot()
+                    3 -> buildBinaryExport("Viewshed-QR.png", "image/png") {
+                        ByteArrayOutputStream().use { output ->
+                            QrExport.bitmap(QrExport.payload(results.first())).compress(Bitmap.CompressFormat.PNG, 100, output)
+                            output.toByteArray()
+                        }
+                    }
+                    4 -> buildBinaryExport("Viewshed-analysis.zip", "application/zip") {
+                        AdvancedExport.toAnalysisBundle(results, binding.switchMultiObserver.isChecked)
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun buildBinaryExport(title: String, mime: String, builder: () -> ByteArray) {
+        lifecycleScope.launch {
+            try {
+                val bytes = withContext(Dispatchers.Default) { builder() }
+                shareBytes(bytes, mime, title)
+            } catch (error: Exception) {
+                Log.e(TAG, "Export failed", error)
+                toast("Export failed: ${error.message}")
+            }
+        }
+    }
+
+    private fun exportMapSnapshot() {
+        if (!::map.isInitialized) return
+        map.snapshot { bitmap ->
+            if (bitmap == null) {
+                toast("Map snapshot unavailable.")
+                return@snapshot
+            }
+            lifecycleScope.launch(Dispatchers.Default) {
+                val bytes = ByteArrayOutputStream().use { output ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                    output.toByteArray()
+                }
+                withContext(Dispatchers.Main) { shareBytes(bytes, "image/png", "Viewshed-map.png") }
+            }
+        }
+    }
+
+    private fun shareBytes(bytes: ByteArray, mime: String, title: String) {
+        val directory = File(cacheDir, "shared").apply { mkdirs() }
+        val safeName = title.replace(Regex("[^A-Za-z0-9._-]"), "-")
+        val file = File(directory, safeName)
+        file.writeBytes(bytes)
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(share, "Share $title"))
     }
 
     private fun shareText(body: String, mime: String, title: String) {
