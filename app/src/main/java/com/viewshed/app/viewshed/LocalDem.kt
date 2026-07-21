@@ -131,24 +131,46 @@ class AsciiGridDem private constructor(
 
 /** Compact memory-mapped cache used after parsing a local DEM. */
 class MappedFloatDem private constructor(
-    private val columns: Int,
-    private val rows: Int,
+    override val columns: Int,
+    override val rows: Int,
     private val xll: Double,
     private val yll: Double,
-    private val cellSize: Double,
+    private val cellWidth: Double,
+    private val cellHeight: Double,
     private val noData: Float,
     private val buffer: ByteBuffer,
     private val file: RandomAccessFile
-) : DemSource, AutoCloseable {
-    override val bounds = DemBounds(yll, xll, yll + rows * cellSize, xll + columns * cellSize)
+) : RasterDemSource, AutoCloseable {
+    override val bounds = DemBounds(yll, xll, yll + rows * cellHeight, xll + columns * cellWidth)
 
     override fun elevation(point: GeoPoint): Double? {
         if (!bounds.contains(point)) return null
-        val column = ((point.lon - xll) / cellSize).toInt().coerceIn(0, columns - 1)
-        val row = (rows - 1 - ((point.lat - yll) / cellSize).toInt()).coerceIn(0, rows - 1)
+        val column = (point.lon - xll) / cellWidth - 0.5
+        val row = rows - (point.lat - yll) / cellHeight - 0.5
+        val x0 = floor(column).toInt().coerceIn(0, columns - 1)
+        val y0 = floor(row).toInt().coerceIn(0, rows - 1)
+        val x1 = (x0 + 1).coerceAtMost(columns - 1)
+        val y1 = (y0 + 1).coerceAtMost(rows - 1)
+        val tx = (column - x0).coerceIn(0.0, 1.0)
+        val ty = (row - y0).coerceIn(0.0, 1.0)
+        val a = elevationAt(y0, x0) ?: return null
+        val b = elevationAt(y0, x1) ?: return null
+        val c = elevationAt(y1, x0) ?: return null
+        val d = elevationAt(y1, x1) ?: return null
+        return (a * (1.0 - tx) + b * tx) * (1.0 - ty) +
+            (c * (1.0 - tx) + d * tx) * ty
+    }
+
+    override fun elevationAt(row: Int, column: Int): Double? {
+        if (row !in 0 until rows || column !in 0 until columns) return null
         val value = buffer.getFloat((row * columns + column) * Float.SIZE_BYTES)
         return if (value == noData || value.isNaN()) null else value.toDouble()
     }
+
+    override fun pointAt(row: Int, column: Int): GeoPoint = GeoPoint(
+        lat = yll + (rows - row - 0.5) * cellHeight,
+        lon = xll + (column + 0.5) * cellWidth,
+    )
 
     override fun close() = file.close()
 
@@ -159,13 +181,42 @@ class MappedFloatDem private constructor(
             rows: Int,
             xll: Double,
             yll: Double,
-            cellSize: Double,
+            cellWidth: Double,
+            cellHeight: Double,
             noData: Float
         ): MappedFloatDem {
             val raf = RandomAccessFile(file, "r")
             val buffer = raf.channel.map(FileChannel.MapMode.READ_ONLY, 0, raf.length())
                 .order(ByteOrder.LITTLE_ENDIAN)
-            return MappedFloatDem(columns, rows, xll, yll, cellSize, noData, buffer, raf)
+            return MappedFloatDem(columns, rows, xll, yll, cellWidth, cellHeight, noData, buffer, raf)
+        }
+
+        /** Materialize a parsed regular raster into a compact memory-mapped working file. */
+        fun create(file: File, source: RasterDemSource): MappedFloatDem {
+            file.parentFile?.mkdirs()
+            RandomAccessFile(file, "rw").use { output ->
+                output.setLength(source.columns.toLong() * source.rows * Float.SIZE_BYTES)
+                val mapped = output.channel.map(FileChannel.MapMode.READ_WRITE, 0, output.length())
+                mapped.order(ByteOrder.LITTLE_ENDIAN)
+                for (row in 0 until source.rows) for (column in 0 until source.columns) {
+                    mapped.putFloat(
+                        (row * source.columns + column) * Float.SIZE_BYTES,
+                        source.elevationAt(row, column)?.toFloat() ?: Float.NaN,
+                    )
+                }
+                mapped.force()
+            }
+            val bounds = source.bounds
+            return open(
+                file = file,
+                columns = source.columns,
+                rows = source.rows,
+                xll = bounds.west,
+                yll = bounds.south,
+                cellWidth = (bounds.east - bounds.west) / source.columns,
+                cellHeight = (bounds.north - bounds.south) / source.rows,
+                noData = Float.NaN,
+            )
         }
     }
 }

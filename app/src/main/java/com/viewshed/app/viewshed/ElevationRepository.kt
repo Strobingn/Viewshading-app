@@ -54,6 +54,10 @@ class ElevationRepository {
      * GeoTIFFs can be sampled in their native CRS without resampling the whole file. */
     @Volatile
     var localDemSource: DemSource? = null
+        set(value) {
+            if (field !== value) runCatching { (field as? AutoCloseable)?.close() }
+            field = value
+        }
 
     /**
      * Synthetic terrain is returned only when demo mode is explicitly enabled.

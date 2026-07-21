@@ -133,6 +133,7 @@ class TerrainLabActivity : AppCompatActivity() {
         }
         binding.sliderTerrainAzimuth.addOnChangeListener { _, _, fromUser -> if (fromUser) scheduleRender() }
         binding.sliderTerrainAltitude.addOnChangeListener { _, _, fromUser -> if (fromUser) scheduleRender() }
+        binding.sliderTerrainNeighborhood.addOnChangeListener { _, _, fromUser -> if (fromUser) scheduleRender() }
         binding.sliderTerrainExaggeration.addOnChangeListener { _, value, fromUser ->
             if (fromUser) {
                 binding.terrainCanvas.setVerticalExaggeration(value)
@@ -152,7 +153,11 @@ class TerrainLabActivity : AppCompatActivity() {
                     "las", "laz" -> LidarTerrainLoader.load(
                         this@TerrainLabActivity,
                         uri,
-                        LidarImportOptions(groundMode = selectedGroundMode()),
+                        LidarImportOptions(
+                            groundMode = selectedGroundMode(),
+                            rasterResolution = selectedLidarResolution(),
+                            smoothingRadius = binding.sliderGroundSmoothing.value.toInt(),
+                        ),
                     )
                     "tif", "tiff", "asc", "ascii", "grd" -> {
                         val dem = LocalDemLoader.load(this@TerrainLabActivity, uri)
@@ -181,6 +186,12 @@ class TerrainLabActivity : AppCompatActivity() {
         binding.chipGroundAutomatic.isChecked -> GroundSurfaceMode.AUTO_LOWEST
         binding.chipGroundSurface.isChecked -> GroundSurfaceMode.SURFACE_MODEL
         else -> GroundSurfaceMode.SOURCE_CLASSIFIED
+    }
+
+    private fun selectedLidarResolution(): Int = when {
+        binding.chipLidarDetailLow.isChecked -> 512
+        binding.chipLidarDetailHigh.isChecked -> 2_048
+        else -> 1_024
     }
 
     private fun setRaster(value: TerrainRaster) {
@@ -235,7 +246,7 @@ class TerrainLabActivity : AppCompatActivity() {
         lightAzimuthDeg = binding.sliderTerrainAzimuth.value.toDouble(),
         lightAltitudeDeg = binding.sliderTerrainAltitude.value.toDouble(),
         verticalExaggeration = binding.sliderTerrainExaggeration.value.toDouble(),
-        neighborhoodRadius = 8,
+        neighborhoodRadius = binding.sliderTerrainNeighborhood.value.toInt(),
     )
 
     private fun toggleContours() {
@@ -274,12 +285,17 @@ class TerrainLabActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 candidates = withContext(Dispatchers.Default) {
-                    TerrainAnalysis.detectFeatures(terrain, thresholdM = 0.45, radius = 8)
+                    TerrainAnalysis.detectFeatures(
+                        terrain,
+                        thresholdM = binding.sliderFeatureThreshold.value.toDouble(),
+                        radius = binding.sliderTerrainNeighborhood.value.toInt(),
+                    )
                 }
                 TerrainWorkspace.candidates = candidates
                 binding.terrainCanvas.setCandidates(candidates)
                 if (candidates.isEmpty()) {
-                    binding.tvTerrainLabStatus.text = "No strong anomalies found at the 0.45 m threshold."
+                    binding.tvTerrainLabStatus.text =
+                        "No strong anomalies found at the ${binding.sliderFeatureThreshold.value} m threshold."
                 } else {
                     val foundations = candidates.count { "foundation" in it.type.lowercase(Locale.US) }
                     binding.tvTerrainLabStatus.text =

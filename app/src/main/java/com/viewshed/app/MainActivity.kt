@@ -76,6 +76,7 @@ import com.viewshed.app.viewshed.GeoPoint
 import com.viewshed.app.viewshed.MeasurementTool
 import com.viewshed.app.viewshed.LocalDemLoader
 import com.viewshed.app.viewshed.LocalDemStore
+import com.viewshed.app.viewshed.MappedFloatDem
 import com.viewshed.app.viewshed.RasterDemSource
 import com.viewshed.app.viewshed.OfflineMapCache
 import com.viewshed.app.viewshed.PhotoGeotagHelper
@@ -527,8 +528,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private suspend fun activateStoredDem(entry: LocalDemStore.Entry) {
         val file = localDemStore.file(entry)
         val extension = file.extension.lowercase(Locale.US)
-        if (extension == "tif" || extension == "tiff") {
-            val source = LocalDemLoader.load(file)
+        if (extension in setOf("tif", "tiff", "asc", "ascii", "grd")) {
+            val parsed = LocalDemLoader.load(file)
+            val source = if (extension in setOf("asc", "ascii", "grd") && parsed is RasterDemSource) {
+                withContext(Dispatchers.IO) {
+                    MappedFloatDem.create(File(cacheDir, "mapped_dems/${entry.id}.float"), parsed)
+                }
+            } else parsed
             elevationRepo.localDemSource = source
             elevationRepo.localTerrain = null
             localDemDisplayName = entry.name
