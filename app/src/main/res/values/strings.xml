@@ -61,6 +61,8 @@
     <string name="theme_dialog_title">Theme</string>
     <string name="settings_done">Done</string>
     <string name="field_tools">Field tools</string>
+    <string name="btn_field_projects">Field projects · GPS waypoints · track recording</string>
+    <string name="btn_terrain_ar">Terrain AR camera · compass · feature leads</string>
     <string name="cache_offline">Cache offline pack</string>
     <string name="manage_offline">Manage packs</string>
     <string name="use_offline_pack">Use offline elevation only</string>
@@ -94,6 +96,7 @@
     <string name="btn_load_dem">Load DEM…</string>
     <string name="btn_demo_dem">Demo DEM grid</string>
     <string name="btn_terrain_lab">Open full-screen Terrain Lab (DEM + LAS/LAZ)</string>
+    <string name="btn_remote_layers">ArcGIS · WMS · WCS · XYZ map layers</string>
     <string name="use_cloud_backend">Use Oracle / cloud backend</string>
     <string name="backend_url_hint">Backend URL (http://IP:8000)</string>
     <string name="backend_url_default">http://129.80.174.236:8000</string>

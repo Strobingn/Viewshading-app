@@ -77,6 +77,9 @@ dependencies {
     implementation("mil.nga:tiff:3.0.0")
     implementation("com.github.mreutegg:laszip4j:0.21")
     implementation("com.google.zxing:core:3.5.4")
+    implementation("androidx.camera:camera-camera2:1.6.1")
+    implementation("androidx.camera:camera-lifecycle:1.6.1")
+    implementation("androidx.camera:camera-view:1.6.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

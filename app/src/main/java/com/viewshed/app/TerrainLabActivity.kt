@@ -188,6 +188,7 @@ class TerrainLabActivity : AppCompatActivity() {
         TerrainWorkspace.current = value
         contoursVisible = false
         candidates = emptyList()
+        TerrainWorkspace.candidates = emptyList()
         binding.terrainCanvas.setContours(emptyList())
         binding.terrainCanvas.setCandidates(emptyList())
         scheduleRender(immediate = true)
@@ -275,6 +276,7 @@ class TerrainLabActivity : AppCompatActivity() {
                 candidates = withContext(Dispatchers.Default) {
                     TerrainAnalysis.detectFeatures(terrain, thresholdM = 0.45, radius = 8)
                 }
+                TerrainWorkspace.candidates = candidates
                 binding.terrainCanvas.setCandidates(candidates)
                 if (candidates.isEmpty()) {
                     binding.tvTerrainLabStatus.text = "No strong anomalies found at the 0.45 m threshold."

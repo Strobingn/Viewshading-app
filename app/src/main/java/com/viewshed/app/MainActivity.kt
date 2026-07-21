@@ -45,10 +45,16 @@ import com.google.android.gms.maps.model.Polygon
 import com.google.android.gms.maps.model.PolygonOptions
 import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
+import com.google.android.gms.maps.model.TileOverlay
+import com.google.android.gms.maps.model.TileOverlayOptions
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import com.viewshed.app.databinding.ActivityMainBinding
+import com.viewshed.app.data.RemoteLayerType
+import com.viewshed.app.data.RemoteMapLayerSpec
+import com.viewshed.app.data.RemoteMapLayerStore
+import com.viewshed.app.data.RemoteMapLayers
 import com.viewshed.app.performance.PerformanceMonitor
 import com.viewshed.app.viewshed.AnalysisPreset
 import com.viewshed.app.viewshed.AnalysisSession
@@ -111,6 +117,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var sessionHistory: SessionHistory
     private lateinit var fieldForms: FieldDataForms
     private lateinit var photoGeotag: PhotoGeotagHelper
+    private lateinit var remoteLayerStore: RemoteMapLayerStore
     private var compass: CompassHelper? = null
 
     private val observers = mutableListOf<GeoPoint>()
@@ -125,6 +132,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val analysisMarkers = mutableListOf<Marker>()
     private val measureMarkers = mutableListOf<Marker>()
     private val pathPoints = mutableListOf<GeoPoint>()
+    private val remoteTileOverlays = mutableMapOf<String, TileOverlay>()
 
     private var calcJob: Job? = null
     private var calculationVersion = 0
@@ -231,6 +239,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         sessionHistory = SessionHistory(this)
         fieldForms = FieldDataForms(this)
         photoGeotag = PhotoGeotagHelper(this)
+        remoteLayerStore = RemoteMapLayerStore(this)
         compass = CompassHelper(this) { deg ->
             runOnUiThread {
                 if (::binding.isInitialized) {
@@ -467,6 +476,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 ),
             )
         }
+        binding.btnRemoteLayers.setOnClickListener { showRemoteLayersDialog() }
         binding.btnDemoDem.setOnClickListener {
             lifecycleScope.launch {
                 val center =
@@ -528,6 +538,158 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             )
     }
 
+    private fun restoreRemoteLayers() {
+        if (!::map.isInitialized || !::remoteLayerStore.isInitialized) return
+        remoteLayerStore.list().forEach(::applyRemoteLayer)
+    }
+
+    private fun showRemoteLayersDialog() {
+        val layers = remoteLayerStore.list()
+        val items = buildList {
+            add("＋ Add remote layer")
+            layers.forEach { layer ->
+                val state = if (remoteTileOverlays.containsKey(layer.id)) "visible" else "hidden"
+                add("${layer.name} · ${layer.type.label} · $state")
+            }
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Remote terrain and map layers")
+            .setMessage("Add public XYZ, ArcGIS MapServer, WMS, or WCS endpoints. Layers are saved on this device.")
+            .setItems(items) { _, which ->
+                if (which == 0) chooseRemoteLayerType()
+                else showRemoteLayerActions(layers[which - 1])
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun chooseRemoteLayerType(existing: RemoteMapLayerSpec? = null) {
+        if (existing != null) {
+            promptRemoteLayer(existing.type, existing)
+            return
+        }
+        val types = RemoteLayerType.entries
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Layer service type")
+            .setItems(types.map { it.label }.toTypedArray()) { _, which ->
+                promptRemoteLayer(types[which], null)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun promptRemoteLayer(type: RemoteLayerType, existing: RemoteMapLayerSpec?) {
+        val name = EditText(this).apply {
+            hint = "Display name"
+            setText(existing?.name.orEmpty())
+            setSingleLine()
+        }
+        val url = EditText(this).apply {
+            hint = when (type) {
+                RemoteLayerType.XYZ -> "https://server/{z}/{x}/{y}.png"
+                RemoteLayerType.ARCGIS -> "https://server/arcgis/rest/services/name/MapServer"
+                RemoteLayerType.WMS -> "https://server/geoserver/wms"
+                RemoteLayerType.WCS -> "https://server/geoserver/wcs"
+            }
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(existing?.url.orEmpty())
+            setSingleLine()
+        }
+        val serviceLayer = EditText(this).apply {
+            hint = if (type == RemoteLayerType.WCS) "Coverage identifier" else "Layer name"
+            setText(existing?.layerName.orEmpty())
+            setSingleLine()
+            visibility = if (type == RemoteLayerType.WMS || type == RemoteLayerType.WCS) View.VISIBLE else View.GONE
+        }
+        val opacity = EditText(this).apply {
+            hint = "Opacity 0.0–1.0"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(String.format(Locale.US, "%.2f", existing?.opacity ?: 0.75f))
+            setSingleLine()
+        }
+        val content = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val spacing = dp(12)
+            setPadding(spacing, dp(4), spacing, 0)
+            addView(name)
+            addView(url)
+            addView(serviceLayer)
+            addView(opacity)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(if (existing == null) "Add ${type.label}" else "Edit ${existing.name}")
+            .setMessage(
+                if (type == RemoteLayerType.WCS) {
+                    "WCS viewing requires a server that supports image/png GetCoverage responses."
+                } else {
+                    "Only add endpoints you trust; tile requests go directly from this device to that server."
+                },
+            )
+            .setView(content)
+            .setPositiveButton(R.string.save) { _, _ ->
+                val spec = RemoteMapLayerSpec(
+                    id = existing?.id ?: java.util.UUID.randomUUID().toString(),
+                    name = name.text?.toString()?.trim().orEmpty(),
+                    type = type,
+                    url = url.text?.toString()?.trim().orEmpty(),
+                    layerName = serviceLayer.text?.toString()?.trim().orEmpty(),
+                    opacity = (opacity.text?.toString()?.toFloatOrNull() ?: 0.75f).coerceIn(0f, 1f),
+                )
+                try {
+                    RemoteMapLayers.validate(spec)
+                    remoteLayerStore.save(spec)
+                    applyRemoteLayer(spec)
+                    toast("${spec.name} added to the map")
+                } catch (error: IllegalArgumentException) {
+                    toast(error.message ?: "Invalid layer settings")
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showRemoteLayerActions(spec: RemoteMapLayerSpec) {
+        val visible = remoteTileOverlays.containsKey(spec.id)
+        val actions = arrayOf(if (visible) "Hide layer" else "Show layer", "Edit", "Delete")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(spec.name)
+            .setMessage(spec.url)
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> if (visible) {
+                        remoteTileOverlays.remove(spec.id)?.remove()
+                    } else {
+                        applyRemoteLayer(spec)
+                    }
+                    1 -> chooseRemoteLayerType(spec)
+                    2 -> {
+                        remoteTileOverlays.remove(spec.id)?.remove()
+                        remoteLayerStore.delete(spec.id)
+                        toast("${spec.name} deleted")
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun applyRemoteLayer(spec: RemoteMapLayerSpec) {
+        if (!::map.isInitialized) return
+        try {
+            remoteTileOverlays.remove(spec.id)?.remove()
+            val overlay = map.addTileOverlay(
+                TileOverlayOptions()
+                    .tileProvider(RemoteMapLayers.provider(spec))
+                    .transparency((1f - spec.opacity).coerceIn(0f, 1f))
+                    .fadeIn(true)
+                    .zIndex(2f),
+            )
+            if (overlay != null) remoteTileOverlays[spec.id] = overlay
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "Invalid remote map layer ${spec.name}", error)
+        }
+    }
+
     private fun compassCardinal(deg: Float): String {
         val dirs = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
         val i = ((deg + 22.5f) / 45f).toInt() % 8
@@ -535,6 +697,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun setupFieldTools() {
+        binding.btnFieldProjects.setOnClickListener {
+            startActivity(Intent(this, FieldProjectActivity::class.java))
+        }
+        binding.btnTerrainAr.setOnClickListener {
+            startActivity(Intent(this, ArTerrainActivity::class.java))
+        }
         binding.btnCacheOffline.setOnClickListener { cacheOfflinePack() }
         binding.btnManageOffline.setOnClickListener { showManageOfflineDialog() }
         binding.btnAddNote.setOnClickListener { promptAddNote() }
@@ -767,6 +935,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Default camera first; GPS may override — never overwrite GPS with Newburgh later.
         moveToDefaultLocation()
         refreshFieldMarkers()
+        restoreRemoteLayers()
 
         if (hasLocationPermission()) {
             enableMyLocation(centerIfAvailable = true)

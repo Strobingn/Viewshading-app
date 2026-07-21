@@ -4,4 +4,7 @@ package com.viewshed.app.viewshed.terrain
 object TerrainWorkspace {
     @Volatile
     var current: TerrainRaster? = null
+
+    @Volatile
+    var candidates: List<TerrainFeatureCandidate> = emptyList()
 }
