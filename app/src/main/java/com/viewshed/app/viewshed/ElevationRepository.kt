@@ -50,6 +50,11 @@ class ElevationRepository {
     @Volatile
     var localTerrain: TerrainGrid? = null
 
+    /** Random-access GeoTIFF/ASCII source. Kept separate from [TerrainGrid] so projected
+     * GeoTIFFs can be sampled in their native CRS without resampling the whole file. */
+    @Volatile
+    var localDemSource: DemSource? = null
+
     /**
      * Synthetic terrain is returned only when demo mode is explicitly enabled.
      * Real, local, and offline modes fail closed if any required sample is missing.
@@ -70,6 +75,22 @@ class ElevationRepository {
             )
         }
         if (source == ElevSource.LOCAL_DEM) {
+            localDemSource?.let { dem ->
+                val values = HashMap<String, Double>(required.size)
+                for (point in required) {
+                    val elevation = dem.elevation(point)
+                        ?: throw ElevationDataException(
+                            String.format(
+                                Locale.US,
+                                "The local DEM does not cover %.6f, %.6f.",
+                                point.lat,
+                                point.lon,
+                            ),
+                        )
+                    values[point.key()] = elevation
+                }
+                return ElevationGrid(values, useDemo = false, demSource = dem)
+            }
             val dem =
                 terrain
                     ?: throw ElevationDataException(
@@ -223,8 +244,10 @@ class ElevationGrid(
     private val byKey: Map<String, Double>,
     val useDemo: Boolean,
     val terrain: TerrainGrid? = null,
+    val demSource: DemSource? = null,
 ) {
     fun elevation(point: GeoPoint): Double {
+        demSource?.elevation(point)?.let { return it }
         terrain?.sampleBilinear(point.lat, point.lon)?.let { return it }
         byKey[point.key()]?.let { return it }
         if (useDemo) return DemoTerrain.elevation(point)

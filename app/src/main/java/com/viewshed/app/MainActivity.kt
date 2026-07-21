@@ -60,6 +60,8 @@ import com.viewshed.app.viewshed.FieldNotesManager
 import com.viewshed.app.viewshed.GeoExport
 import com.viewshed.app.viewshed.GeoPoint
 import com.viewshed.app.viewshed.MeasurementTool
+import com.viewshed.app.viewshed.LocalDemLoader
+import com.viewshed.app.viewshed.RasterDemSource
 import com.viewshed.app.viewshed.OfflineMapCache
 import com.viewshed.app.viewshed.PhotoGeotagHelper
 import com.viewshed.app.viewshed.ProfessionalAnalysis
@@ -72,6 +74,8 @@ import com.viewshed.app.viewshed.ViewshedResult
 import com.viewshed.app.viewshed.VoiceMemoHelper
 import com.viewshed.app.viewshed.VulkanViewshed
 import com.viewshed.app.viewshed.terrain.TerrainEngine
+import com.viewshed.app.viewshed.terrain.TerrainRaster
+import com.viewshed.app.viewshed.terrain.TerrainWorkspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -127,6 +131,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var pendingLocationObserver = false
     private var systemInsetLeft = 0
     private var systemInsetRight = 0
+    private var localDemDisplayName: String? = null
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -162,7 +167,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         else toast("Geotag failed")
     }
 
-    /** Load local DEM (.asc / .csv) into the terrain engine. */
+    /** Load a local GeoTIFF, ESRI ASCII Grid, or elevation CSV into the terrain engine. */
     private val pickDemRequest = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -170,19 +175,36 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         lifecycleScope.launch {
             try {
                 val name = uri.lastPathSegment?.substringAfterLast('/') ?: "dem.asc"
-                val grid = withContext(Dispatchers.IO) {
-                    val cache = File(cacheDir, "import_${System.currentTimeMillis()}_$name")
-                    contentResolver.openInputStream(uri)?.use { input ->
-                        cache.outputStream().use { output -> input.copyTo(output) }
-                    } ?: error("Cannot open DEM")
-                    TerrainEngine.loadAuto(cache)
+                val extension = name.substringAfterLast('.', missingDelimiterValue = "").lowercase(Locale.US)
+                if (extension == "tif" || extension == "tiff") {
+                    val source = LocalDemLoader.load(this@MainActivity, uri)
+                    elevationRepo.localDemSource = source
+                    elevationRepo.localTerrain = null
+                    localDemDisplayName = name
+                    (source as? RasterDemSource)?.let { rasterSource ->
+                        TerrainWorkspace.current = withContext(Dispatchers.Default) {
+                            TerrainRaster.from(rasterSource, name)
+                        }
+                    }
+                } else {
+                    val grid = withContext(Dispatchers.IO) {
+                        val cache = File(cacheDir, "import_${System.currentTimeMillis()}_$name")
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            cache.outputStream().use { output -> input.copyTo(output) }
+                        } ?: error("Cannot open DEM")
+                        TerrainEngine.loadAuto(cache)
+                    }
+                    elevationRepo.localTerrain = grid
+                    elevationRepo.localDemSource = null
+                    localDemDisplayName = grid.name
+                    TerrainWorkspace.current = withContext(Dispatchers.Default) {
+                        TerrainRaster.from(grid)
+                    }
                 }
-                elevationRepo.localTerrain = grid
                 binding.chipElevLocal.isChecked = true
                 binding.switchDemoTerrain.isChecked = false
                 updateTerrainStatus()
-                val s = grid.stats()
-                toast("Terrain loaded: ${grid.name} (${s.validCells} cells)")
+                toast("Terrain loaded: $name")
             } catch (e: Exception) {
                 Log.e("Viewshed", "DEM load failed", e)
                 toast("DEM load failed: ${e.message}")
@@ -425,6 +447,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun setupTerrainEngine() {
+        binding.btnTerrainLab.setOnClickListener {
+            startActivity(Intent(this, TerrainLabActivity::class.java))
+        }
         binding.btnLoadDem.setOnClickListener {
             pickDemRequest.launch(
                 arrayOf(
@@ -445,6 +470,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     TerrainEngine.generateDemoRegion(center = center)
                 }
                 elevationRepo.localTerrain = grid
+                elevationRepo.localDemSource = null
+                localDemDisplayName = grid.name
+                TerrainWorkspace.current = withContext(Dispatchers.Default) {
+                    TerrainRaster.from(grid)
+                }
                 binding.chipElevLocal.isChecked = true
                 binding.switchDemoTerrain.isChecked = false
                 updateTerrainStatus()
@@ -452,7 +482,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         }
         binding.chipElevLocal.setOnCheckedChangeListener { _, checked ->
-            if (checked && elevationRepo.localTerrain == null) {
+            if (checked && elevationRepo.localTerrain == null && elevationRepo.localDemSource == null) {
                 // Auto-generate demo region so Local DEM always has a surface
                 binding.btnDemoDem.performClick()
             }
@@ -462,6 +492,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun updateTerrainStatus() {
+        elevationRepo.localDemSource?.let { source ->
+            val bounds = source.bounds
+            binding.tvTerrainStatus.text = String.format(
+                Locale.US,
+                "Terrain: %s · %.5f,%.5f to %.5f,%.5f",
+                localDemDisplayName ?: "GeoTIFF",
+                bounds.south,
+                bounds.west,
+                bounds.north,
+                bounds.east,
+            )
+            return
+        }
         val t = elevationRepo.localTerrain
         if (t == null) {
             binding.tvTerrainStatus.text = getString(R.string.terrain_none)
