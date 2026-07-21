@@ -66,12 +66,14 @@ class ArTerrainOverlayView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val horizonY = (height / 2f + pitch.toFloat() / VERTICAL_FOV_DEG * height).coerceIn(0f, height.toFloat())
+        val horizonY = (
+            height / 2f + pitch.toFloat() / VERTICAL_FOV_DEG.toFloat() * height.toFloat()
+        ).coerceIn(0f, height.toFloat())
         canvas.save()
         canvas.rotate(-roll.toFloat(), width / 2f, horizonY)
         canvas.drawLine(0f, horizonY, width.toFloat(), horizonY, gridPaint)
         for (offset in -30..30 step 10) {
-            val x = width / 2f + offset / HORIZONTAL_FOV_DEG.toFloat() * width
+            val x = width / 2f + offset.toFloat() / HORIZONTAL_FOV_DEG.toFloat() * width.toFloat()
             canvas.drawLine(x, horizonY - 14f, x, horizonY + 14f, gridPaint)
             canvas.drawText("${GeoMath.clampBearing(heading + offset).toInt()}°", x + 5f, horizonY - 18f, labelPaint)
         }
