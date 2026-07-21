@@ -160,7 +160,7 @@
                     android:value="315"
                     android:valueFrom="0"
                     android:valueTo="360"
-                    app:stepSize="1" />
+                    android:stepSize="1" />
 
                 <com.google.android.material.slider.Slider
                     android:id="@+id/sliderTerrainAltitude"
@@ -170,7 +170,7 @@
                     android:value="35"
                     android:valueFrom="5"
                     android:valueTo="85"
-                    app:stepSize="1" />
+                    android:stepSize="1" />
 
                 <com.google.android.material.slider.Slider
                     android:id="@+id/sliderTerrainExaggeration"
@@ -180,7 +180,7 @@
                     android:value="2"
                     android:valueFrom="0.5"
                     android:valueTo="10"
-                    app:stepSize="0.5" />
+                    android:stepSize="0.5" />
             </LinearLayout>
 
             <HorizontalScrollView
