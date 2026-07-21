@@ -58,6 +58,14 @@ data class VisibilityRay(
     val farthestVisibleM: Double,
 )
 
+data class ElevationProfilePoint(
+    val distanceM: Double,
+    val elevationM: Double,
+    val visible: Boolean,
+    val terrainAngleRad: Double,
+    val targetAngleRad: Double,
+)
+
 /** One contiguous visible run within a ray's angular wedge. */
 data class VisibleSector(
     val bearingStartDeg: Double,
@@ -92,7 +100,25 @@ data class ViewshedResult(
     val params: ViewshedParams,
     val visibilityRays: List<VisibilityRay> = emptyList(),
     val visibleSectors: List<VisibleSector> = emptyList(),
-)
+) {
+    /** Returns the computed ray nearest a requested bearing as an exportable profile. */
+    fun elevationProfile(bearingDeg: Double): List<ElevationProfilePoint> {
+        val normalized = GeoMath.clampBearing(bearingDeg)
+        val ray = visibilityRays.minByOrNull { candidate ->
+            val delta = kotlin.math.abs(candidate.bearingDeg - normalized)
+            minOf(delta, 360.0 - delta)
+        } ?: return emptyList()
+        return ray.samples.map { sample ->
+            ElevationProfilePoint(
+                distanceM = sample.distanceM,
+                elevationM = sample.terrainElevationM,
+                visible = sample.visible,
+                terrainAngleRad = sample.terrainAngleRad,
+                targetAngleRad = sample.targetAngleRad,
+            )
+        }
+    }
+}
 
 enum class AnalysisPreset(
     val label: String,
