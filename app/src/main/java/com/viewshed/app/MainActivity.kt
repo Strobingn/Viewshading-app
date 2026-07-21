@@ -1,6 +1,7 @@
 package com.viewshed.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -739,7 +740,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun enableMyLocation(centerIfAvailable: Boolean = true) {
+        // Both guarded calls accept either fine or coarse location permission.
         if (!hasLocationPermission()) return
         try {
             map.isMyLocationEnabled = true
@@ -766,6 +769,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             .addOnFailureListener { Log.w(TAG, "lastLocation failed", it) }
     }
 
+    @SuppressLint("MissingPermission")
     private fun placeObserverAtMyLocation() {
         if (!hasLocationPermission()) {
             pendingLocationObserver = true
