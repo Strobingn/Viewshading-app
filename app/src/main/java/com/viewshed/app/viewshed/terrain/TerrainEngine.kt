@@ -274,8 +274,8 @@ object TerrainEngine {
         val pixels = IntArray(w * h)
         for (y in 1 until h - 1) {
             for (x in 1 until w - 1) {
-                fun z(r: Int, c: Int): Double =
-                    terrain.elevationAt(r, c)?.toDouble() ?: terrain.elevations[r * w + c].toDouble()
+                // Only use valid elevations — never feed NODATA (-9999) into Horn stencil.
+                fun z(r: Int, c: Int): Double? = terrain.elevationAt(r, c)?.toDouble()
                 val a = z(y - 1, x - 1)
                 val b = z(y - 1, x)
                 val c = z(y - 1, x + 1)
@@ -284,6 +284,12 @@ object TerrainEngine {
                 val g = z(y + 1, x - 1)
                 val hh = z(y + 1, x)
                 val i = z(y + 1, x + 1)
+                if (a == null || b == null || c == null || d == null ||
+                    f == null || g == null || hh == null || i == null
+                ) {
+                    pixels[y * w + x] = Color.TRANSPARENT
+                    continue
+                }
                 val dzdx = ((c + 2 * f + i) - (a + 2 * d + g)) / (8 * cellX)
                 val dzdy = ((g + 2 * hh + i) - (a + 2 * b + c)) / (8 * cellY)
                 val slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy))

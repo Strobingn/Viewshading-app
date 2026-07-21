@@ -12,6 +12,17 @@ object GeoMath {
     /** Mean Earth radius (WGS84-ish) in meters. */
     const val EARTH_RADIUS_M = 6_371_000.0
 
+    /** Standard atmospheric refraction coefficient (≈ ITU / surveying default). */
+    const val DEFAULT_REFRACTION = 0.13
+
+    /** Allowed refraction range used everywhere (params, curvature, backend). */
+    const val MIN_REFRACTION = 0.0
+    const val MAX_REFRACTION = 0.25
+
+    /** Clamp refraction to the single shared range used by LOS math. */
+    fun clampRefraction(refractionCoeff: Double): Double =
+        refractionCoeff.coerceIn(MIN_REFRACTION, MAX_REFRACTION)
+
     /**
      * Destination point given start, bearing (degrees clockwise from north),
      * and great-circle distance in meters.
@@ -46,7 +57,7 @@ object GeoMath {
      * k ≈ 0.13 standard → R_eff = R / (1 − k) > R (less apparent drop).
      */
     fun effectiveEarthRadiusM(refractionCoeff: Double): Double {
-        val k = refractionCoeff.coerceIn(0.0, 0.25)
+        val k = clampRefraction(refractionCoeff)
         return EARTH_RADIUS_M / (1.0 - k)
     }
 

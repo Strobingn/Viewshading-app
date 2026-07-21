@@ -106,4 +106,58 @@ class ProfessionalAnalysisTest {
         assertEquals(0, empty.observerCount)
         assertTrue(empty.cells.isEmpty())
     }
+
+    @Test
+    fun intervisibility_uses_max_horizon_not_intermediate_below_horizon() {
+        // Intermediate dip below a near ridge must not, by itself, decide visibility;
+        // only whether the target elev-angle clears the max intermediate horizon.
+        val a = GeoPoint(0.0, 0.0)
+        val b = GeoMath.destination(a, 0.0, 1000.0)
+        val map = mutableMapOf<String, Double>()
+        for (s in 0..100) {
+            val d = s * 10.0
+            val p = GeoMath.destination(a, 0.0, d)
+            val h = when {
+                d in 200.0..300.0 -> 30.0 // near ridge
+                d in 500.0..600.0 -> 5.0  // dip (below horizon of ridge)
+                else -> 0.0
+            }
+            map[p.key()] = h
+        }
+        map[a.key()] = 0.0
+        map[b.key()] = 0.0
+        val grid = ElevationGrid(map, useDemo = false)
+        val r = ProfessionalAnalysis.intervisibility(
+            a, b, grid, eyeHeightM = 1.0, targetHeightM = 1.0,
+            samples = 50, useCurvature = false,
+        )
+        assertFalse("near ridge should block target at ground", r.visible)
+        assertTrue(r.firstBlockDistM != null && r.firstBlockDistM!! < 400.0)
+    }
+
+    @Test
+    fun shadow_analysis_requires_sun_up_or_empty() {
+        // Night / sun-down → empty boundary (use polar winter-ish timestamp is hard;
+        // just ensure API is stable when solar altitude may be low).
+        val observer = GeoPoint(41.5, -74.0)
+        val params = ViewshedParams(
+            eyeHeightM = 2.0,
+            maxDistKm = 0.5,
+            numRays = 24,
+            samplesPerRay = 20,
+            useCurvature = false,
+            parallelRays = false,
+        )
+        val elevMap = ViewshedEngine.samplePoints(observer, params)
+            .associate { it.key() to 20.0 }
+        val grid = ElevationGrid(elevMap, useDemo = false)
+        val shadow = ProfessionalAnalysis.shadowAnalysis(observer, grid, params)
+        assertTrue(shadow.solar.azimuthDeg in 0.0..360.0)
+        if (shadow.sunUp) {
+            assertTrue(shadow.shadowBoundary.isNotEmpty())
+            assertEquals(shadow.shadowRangesM.size + 1, shadow.shadowBoundary.size) // closed ring
+        } else {
+            assertTrue(shadow.shadowBoundary.isEmpty())
+        }
+    }
 }

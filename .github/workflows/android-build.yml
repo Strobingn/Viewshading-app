@@ -54,7 +54,8 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-debug-${{ github.ref_name }}-${{ github.run_number }}
+          # Use run_id/attempt only — ref_name can be "5/merge" or "fix/foo" (slash not allowed).
+          name: viewshading-debug-${{ github.run_id }}-${{ github.run_attempt }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -65,7 +66,7 @@ jobs:
       - name: Upload unsigned Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-release-unsigned-${{ github.ref_name }}-${{ github.run_number }}
+          name: viewshading-release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
