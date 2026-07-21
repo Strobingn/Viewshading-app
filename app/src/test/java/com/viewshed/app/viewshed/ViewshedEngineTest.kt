@@ -144,4 +144,34 @@ class ViewshedEngineTest {
         assertTrue(h1 > 4000.0)
         assertTrue(h1 < 6000.0)
     }
+
+    @Test
+    fun refraction_clamp_is_shared_between_params_and_geophysics() {
+        assertEquals(0.25, GeoMath.clampRefraction(0.9), 1e-9)
+        assertEquals(0.0, GeoMath.clampRefraction(-1.0), 1e-9)
+        assertEquals(0.13, GeoMath.clampRefraction(0.13), 1e-9)
+        val p = ViewshedParams(refraction = 0.9).sanitized()
+        assertEquals(0.25, p.refraction, 1e-9)
+        // R_eff must use the same clamp (not silent-only in one path)
+        val rWide = GeoMath.effectiveEarthRadiusM(0.9)
+        val rClamp = GeoMath.effectiveEarthRadiusM(0.25)
+        assertEquals(rClamp, rWide, 1e-6)
+    }
+
+    @Test
+    fun curvature_drop_matches_reff_form() {
+        val d = 10_000.0
+        val k = 0.13
+        val rEff = GeoMath.effectiveEarthRadiusM(k)
+        val drop = (d * d) / (2.0 * rEff)
+        val alt = GeoMath.elevationAngleRad(
+            observerElev = 100.0,
+            targetElev = 100.0,
+            distM = d,
+            useCurvature = true,
+            refractionCoeff = k,
+        )
+        // Flat equal heights → negative angle equal to atan2(-drop, d)
+        assertEquals(kotlin.math.atan2(-drop, d), alt, 1e-12)
+    }
 }

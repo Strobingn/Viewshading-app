@@ -6,6 +6,7 @@ import com.viewshed.app.viewshed.ViewshedParams
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -56,6 +57,27 @@ class TerrainEngineTest {
         assertEquals(50f, grid.elevationAt(1, 1))
         val z = grid.sampleBilinear(41.50, -74.01)
         assertNotNull(z)
+    }
+
+    @Test
+    fun elevationAtReturnsNullForNodataNotMinus9999Value() {
+        val asc =
+            """
+            ncols 3
+            nrows 3
+            xllcorner 0
+            yllcorner 0
+            cellsize 1
+            NODATA_value -9999
+            10 -9999 30
+            40 50 60
+            70 80 90
+            """.trimIndent()
+        val grid = TerrainEngine.loadEsriAscii(ByteArrayInputStream(asc.toByteArray()), "nodata.asc")
+        assertNull(grid.elevationAt(0, 1))
+        assertEquals(50f, grid.elevationAt(1, 1))
+        // hillshade must use elevationAt (null) — never raw -9999 as slope input
+        assertEquals(-9999f, grid.elevations[1])
     }
 
     @Test

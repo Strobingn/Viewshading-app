@@ -1189,7 +1189,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     analysisOverlays.add(poly)
                 }
                 val s = shadow.solar
-                val msg = "Sun az ${"%.0f".format(s.azimuthDeg)}° alt ${"%.1f".format(s.altitudeDeg)}° · lit footprint drawn"
+                val maxShadowM = shadow.shadowRangesM.maxOrNull() ?: 0.0
+                val msg =
+                    "Sun az ${"%.0f".format(s.azimuthDeg)}° alt ${"%.1f".format(s.altitudeDeg)}° · " +
+                        "anti-solar cast ~${"%.0f".format(maxShadowM)} m (fan wedge)"
                 binding.tvProStatus.text = msg
                 toast(msg)
             } catch (e: Exception) {

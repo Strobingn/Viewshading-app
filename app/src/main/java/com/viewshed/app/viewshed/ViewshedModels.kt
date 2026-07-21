@@ -23,7 +23,7 @@ data class ViewshedParams(
         maxDistKm = maxDistKm.coerceIn(0.1, 50.0),
         numRays = numRays.coerceIn(8, 360),
         samplesPerRay = samplesPerRay.coerceIn(10, 250),
-        refraction = refraction.coerceIn(0.0, 1.0)
+        refraction = GeoMath.clampRefraction(refraction),
     )
 
     fun withQuality(q: SampleQuality): ViewshedParams = copy(

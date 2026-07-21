@@ -222,7 +222,7 @@ object ViewshedEngine {
             targetElev = targetElev,
             distM = distM,
             useCurvature = p.useCurvature,
-            refractionCoeff = p.refraction
+            refractionCoeff = GeoMath.clampRefraction(p.refraction),
         )
     }
 
