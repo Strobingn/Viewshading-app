@@ -42,6 +42,9 @@
     <string name="quality_fast">Fast</string>
     <string name="quality_balanced">Balanced</string>
     <string name="quality_accurate">Accurate</string>
+    <string name="adaptive_quality">Adaptive quality for heat, battery, and memory</string>
+    <string name="background_processing">Durable background analysis (survives leaving app)</string>
+    <string name="compute_status_starting">Compute: checking device health…</string>
     <string name="adaptive_sampling">Adaptive sampling (experimental)</string>
     <string name="binary_horizon">Binary-search horizon (experimental)</string>
     <string name="parallel_rays">Parallel rays (faster)</string>
@@ -96,6 +99,7 @@
     <string name="btn_load_dem">Load DEM…</string>
     <string name="btn_demo_dem">Demo DEM grid</string>
     <string name="btn_terrain_lab">Open full-screen Terrain Lab (DEM + LAS/LAZ)</string>
+    <string name="btn_manage_dem">Manage offline DEMs · import · download</string>
     <string name="btn_remote_layers">ArcGIS · WMS · WCS · XYZ map layers</string>
     <string name="use_cloud_backend">Use Oracle / cloud backend</string>
     <string name="backend_url_hint">Backend URL (http://IP:8000)</string>

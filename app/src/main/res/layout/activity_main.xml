@@ -537,6 +537,28 @@
                 </com.google.android.material.chip.ChipGroup>
 
                 <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchAdaptiveQuality"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="@string/adaptive_quality" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchBackgroundProcessing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="false"
+                    android:text="@string/background_processing" />
+
+                <TextView
+                    android:id="@+id/tvComputeStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingBottom="4dp"
+                    android:text="@string/compute_status_starting"
+                    android:textAppearance="?attr/textAppearanceBodySmall" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchDemoTerrain"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -730,6 +752,14 @@
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="4dp"
                     android:text="@string/btn_terrain_lab" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnManageDem"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:text="@string/btn_manage_dem" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnRemoteLayers"

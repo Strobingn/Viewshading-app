@@ -213,6 +213,18 @@ object LocalDemLoader {
             }
         } ?: throw ElevationDataException("Unable to open selected DEM file")
     }
+
+    suspend fun load(file: File): DemSource = withContext(Dispatchers.IO) {
+        file.inputStream().buffered().use { input ->
+            when (file.extension.lowercase()) {
+                "asc", "ascii", "grd" -> AsciiGridDem.read(input)
+                "tif", "tiff" -> GeoTiffDem.read(input)
+                else -> throw ElevationDataException(
+                    "Unsupported DEM file. Select GeoTIFF or ESRI ASCII Grid.",
+                )
+            }
+        }
+    }
 }
 
 /**

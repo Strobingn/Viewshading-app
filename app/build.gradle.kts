@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.viewshed.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.viewshed.app"
@@ -80,6 +80,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.6.1")
     implementation("androidx.camera:camera-lifecycle:1.6.1")
     implementation("androidx.camera:camera-view:1.6.1")
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
