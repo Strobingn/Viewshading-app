@@ -25,6 +25,10 @@ captures/
 *.apk
 *.ap_
 *.aab
+
+!gradlew
+!gradlew.bat
+!gradle/wrapper/gradle-wrapper.properties
 !gradle/wrapper/gradle-wrapper.jar
 
 # Local device captures from android CLI
