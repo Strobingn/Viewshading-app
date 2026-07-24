@@ -45,8 +45,14 @@ jobs:
             echo "MAPS_API_KEY secret was injected into secrets.properties"
           fi
 
+      - name: Run backend regression tests
+        run: python3 -m unittest discover -s backend/tests -v
+
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Run Android lint
+        run: ./gradlew lintDebug --stacktrace --no-daemon
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace --no-daemon
@@ -54,7 +60,7 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-debug-${{ github.ref_name }}-${{ github.run_number }}
+          name: viewshading-debug-${{ github.run_id }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -65,7 +71,7 @@ jobs:
       - name: Upload unsigned Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: viewshading-release-unsigned-${{ github.ref_name }}-${{ github.run_number }}
+          name: viewshading-release-unsigned-${{ github.run_id }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14

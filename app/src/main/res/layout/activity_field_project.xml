@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/fieldProjectRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/fieldProjectToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="56dp"
+        app:navigationIcon="@android:drawable/ic_media_previous"
+        app:title="Field project"
+        app:subtitle="GPS waypoints · tracks · offline files" />
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/tvFieldProjectName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No project selected"
+                android:textAppearance="?attr/textAppearanceHeadlineSmall" />
+
+            <TextView
+                android:id="@+id/tvFieldGps"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="8dp"
+                android:text="Waiting for GPS…"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFieldNewProject"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="New project" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFieldOpenProject"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="Open" />
+            </LinearLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnFieldWaypoint"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="Capture GPS waypoint" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnFieldTrack"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="Start GPS track" />
+
+            <TextView
+                android:id="@+id/tvFieldProjectStats"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="8dp"
+                android:text="Waypoints 0 · Tracks 0"
+                android:textAppearance="?attr/textAppearanceBodyLarge" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFieldExportGpx"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:text="Export GPX" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFieldExportCsv"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:text="Export CSV" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="12dp"
+                android:text="Location accuracy and age are checked before a point is accepted. Tracking continues while this screen is open; export files remain usable offline."
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</LinearLayout>

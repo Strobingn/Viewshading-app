@@ -1,10 +1,11 @@
 package com.viewshed.app.viewshed
 
-import android.util.Log
+import com.google.gson.annotations.SerializedName
 import com.viewshed.app.BuildConfig
 import com.viewshed.app.data.ElevationDataSources
 import com.viewshed.app.viewshed.terrain.TerrainEngine
 import com.viewshed.app.viewshed.terrain.TerrainGrid
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -12,15 +13,15 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Query
+import java.util.Locale
 import java.util.concurrent.TimeUnit
-import kotlin.math.cos
-import kotlin.math.sqrt
 
-/**
- * Elevation source: demo terrain or Google Elevation API.
- * Lookups support exact keys plus nearest-neighbor so adaptive / binary-search
- * distances (not on the pre-fetch lattice) still use real elevations.
- */
+class ElevationDataException(
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
+
+/** Resolves complete, single-source elevation grids for a calculation. */
 class ElevationRepository {
 
     private val service: ElevationService by lazy {
@@ -31,36 +32,36 @@ class ElevationRepository {
                 OkHttpClient.Builder()
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(60, TimeUnit.SECONDS)
-                    .build()
+                    .build(),
             )
             .build()
             .create(ElevationService::class.java)
     }
 
     enum class ElevSource {
-        /** Synthetic hills (always offline). */
         DEMO,
-        /** Google Elevation API (MAPS_API_KEY). */
         GOOGLE,
-        /** Open-Topo-Data USGS 3DEP. */
         USGS_3DEP,
-        /** Open-Topo-Data SRTM 90 m. */
         SRTM,
-        /** Open-Topo-Data ETOPO1 (includes bathymetry). */
         ETOPO,
-        /** Local DEM terrain engine (ASC/CSV or in-memory grid). */
-        LOCAL_DEM
+        LOCAL_DEM,
     }
 
-    /** Active local DEM from TerrainEngine (set by UI when user loads a file). */
     @Volatile
     var localTerrain: TerrainGrid? = null
 
+    /** Random-access GeoTIFF/ASCII source. Kept separate from [TerrainGrid] so projected
+     * GeoTIFFs can be sampled in their native CRS without resampling the whole file. */
+    @Volatile
+    var localDemSource: DemSource? = null
+        set(value) {
+            if (field !== value) runCatching { (field as? AutoCloseable)?.close() }
+            field = value
+        }
+
     /**
-     * @param offline Prefer / fill from [OfflineMapCache] when provided.
-     * @param offlineOnly Skip network; use offline pack + demo fallback only.
-     * @param source Network elevation product when not demo/offline-only.
-     * @param terrain Optional explicit local DEM (defaults to [localTerrain]).
+     * Synthetic terrain is returned only when demo mode is explicitly enabled.
+     * Real, local, and offline modes fail closed if any required sample is missing.
      */
     suspend fun resolveElevations(
         points: List<GeoPoint>,
@@ -70,169 +71,197 @@ class ElevationRepository {
         source: ElevSource = ElevSource.GOOGLE,
         terrain: TerrainGrid? = localTerrain,
     ): ElevationGrid {
+        val required = points.distinctBy { it.key() }
         if (useDemo || source == ElevSource.DEMO) {
-            val map = points.associate { it.key() to DemoTerrain.elevation(it) }
-            return ElevationGrid(map, useDemo = true)
+            return ElevationGrid(
+                required.associate { it.key() to DemoTerrain.elevation(it) },
+                useDemo = true,
+            )
         }
         if (source == ElevSource.LOCAL_DEM) {
-            val dem = terrain ?: TerrainEngine.generateDemoRegion()
-            localTerrain = dem
-            return TerrainEngine.toElevationGrid(dem, points)
-        }
-        if (offlineOnly && offline != null) {
-            val map = HashMap<String, Double>(points.size)
-            for (p in points) {
-                map[p.key()] = offline.elevation(p) ?: DemoTerrain.elevation(p)
-            }
-            return ElevationGrid(map, useDemo = false, terrain = terrain)
-        }
-        val map = when (source) {
-            ElevSource.GOOGLE -> fetchElevationsBatched(points).toMutableMap()
-            ElevSource.USGS_3DEP -> fetchOpenTopo(ElevationDataSources.Source.USGS_3DEP, points)
-            ElevSource.SRTM -> fetchOpenTopo(ElevationDataSources.Source.SRTM, points)
-            ElevSource.ETOPO -> fetchOpenTopo(ElevationDataSources.Source.ETOPO, points)
-            ElevSource.DEMO -> points.associate { it.key() to DemoTerrain.elevation(it) }.toMutableMap()
-            ElevSource.LOCAL_DEM -> emptyMap<String, Double>().toMutableMap()
-        }
-        if (offline != null) {
-            for (p in points) {
-                if (!map.containsKey(p.key())) {
-                    offline.elevation(p)?.let { map[p.key()] = it }
+            localDemSource?.let { dem ->
+                val values = HashMap<String, Double>(required.size)
+                for (point in required) {
+                    val elevation = dem.elevation(point)
+                        ?: throw ElevationDataException(
+                            String.format(
+                                Locale.US,
+                                "The local DEM does not cover %.6f, %.6f.",
+                                point.lat,
+                                point.lon,
+                            ),
+                        )
+                    values[point.key()] = elevation
                 }
+                return ElevationGrid(values, useDemo = false, demSource = dem)
             }
+            val dem =
+                terrain
+                    ?: throw ElevationDataException(
+                        "Local DEM is selected, but no terrain file is loaded.",
+                    )
+            return TerrainEngine.toElevationGrid(dem, required)
         }
-        return ElevationGrid(map, useDemo = false, terrain = terrain)
+        if (offlineOnly) {
+            val cache =
+                offline
+                    ?: throw ElevationDataException("Offline elevation is unavailable.")
+            val values = HashMap<String, Double>(required.size)
+            for (point in required) {
+                val elevation =
+                    cache.elevation(point)
+                        ?: throw ElevationDataException(
+                            String.format(
+                                Locale.US,
+                                "The offline pack does not cover %.5f, %.5f.",
+                                point.lat,
+                                point.lon,
+                            ),
+                        )
+                values[point.key()] = elevation
+            }
+            return ElevationGrid(values, useDemo = false)
+        }
+
+        val values =
+            when (source) {
+                ElevSource.GOOGLE -> fetchGoogleElevations(required)
+                ElevSource.USGS_3DEP ->
+                    fetchOpenTopo(ElevationDataSources.Source.USGS_3DEP, required)
+                ElevSource.SRTM ->
+                    fetchOpenTopo(ElevationDataSources.Source.SRTM, required)
+                ElevSource.ETOPO ->
+                    fetchOpenTopo(ElevationDataSources.Source.ETOPO, required)
+                ElevSource.DEMO,
+                ElevSource.LOCAL_DEM
+                -> error("Handled above")
+            }
+        ensureComplete(required, values, source.name)
+        return ElevationGrid(values, useDemo = false)
     }
 
     private suspend fun fetchOpenTopo(
-        src: ElevationDataSources.Source,
-        points: List<GeoPoint>
-    ): MutableMap<String, Double> {
-        val remote = ElevationDataSources.fetch(src, points)
-        if (remote != null && remote.isNotEmpty()) {
-            val map = remote.toMutableMap()
-            points.forEach { p -> map.putIfAbsent(p.key(), DemoTerrain.elevation(p)) }
-            return map
+        source: ElevationDataSources.Source,
+        points: List<GeoPoint>,
+    ): Map<String, Double> {
+        val result = ElevationDataSources.fetch(source, points)
+        if (result == null) {
+            throw ElevationDataException(
+                "${source.label} could not be reached. No demo elevations were substituted.",
+            )
         }
-        Log.w(TAG, "OpenTopo ${src.label} failed — falling back to Google/demo")
-        return fetchElevationsBatched(points).toMutableMap()
+        ensureComplete(points, result, source.label)
+        return result
     }
 
-    private suspend fun fetchElevationsBatched(points: List<GeoPoint>): Map<String, Double> {
+    private suspend fun fetchGoogleElevations(points: List<GeoPoint>): Map<String, Double> {
+        val apiKey = BuildConfig.MAPS_API_KEY
+        if (apiKey.isBlank()) {
+            throw ElevationDataException(
+                "Real terrain is selected, but this APK has no Elevation API key. " +
+                    "Enable Demo terrain or choose a configured data source.",
+            )
+        }
+
         val result = HashMap<String, Double>(points.size)
-        val key = BuildConfig.MAPS_API_KEY
-        if (key.isBlank()) {
-            Log.w(TAG, "No MAPS_API_KEY — demo elevations")
-            points.forEach { result[it.key()] = DemoTerrain.elevation(it) }
-            return result
-        }
-
-        val unique = points.distinctBy { it.key() }
-        for (chunk in unique.chunked(BATCH_SIZE)) {
-            // API requires lat,lng with dots (US format)
-            val locations = chunk.joinToString("|") {
-                String.format(java.util.Locale.US, "%.7f,%.7f", it.lat, it.lon)
-            }
-            try {
-                val response = withContext(Dispatchers.IO) {
-                    service.getElevation(locations, key)
+        for (chunk in points.chunked(BATCH_SIZE)) {
+            val locations =
+                chunk.joinToString("|") {
+                    String.format(Locale.US, "%.7f,%.7f", it.lat, it.lon)
                 }
-                if (response.status == "OK" && response.results.isNotEmpty()) {
-                    response.results.forEachIndexed { idx, elev ->
-                        if (idx < chunk.size) {
-                            result[chunk[idx].key()] = elev.elevation
-                        }
+            val response =
+                try {
+                    withContext(Dispatchers.IO) {
+                        service.getElevation(locations, apiKey)
                     }
-                } else {
-                    Log.w(TAG, "Elevation API: ${response.status}")
-                    chunk.forEach { result[it.key()] = DemoTerrain.elevation(it) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    throw ElevationDataException(
+                        "Real elevation download failed. No demo elevations were substituted.",
+                        error,
+                    )
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Elevation batch failed", e)
-                chunk.forEach { result[it.key()] = DemoTerrain.elevation(it) }
+
+            if (response.status != "OK") {
+                val detail = response.errorMessage?.takeIf { it.isNotBlank() } ?: response.status
+                throw ElevationDataException("Elevation API rejected the request: $detail")
+            }
+            if (response.results.size != chunk.size) {
+                throw ElevationDataException(
+                    "Elevation API returned ${response.results.size} of ${chunk.size} required points.",
+                )
+            }
+            response.results.forEachIndexed { index, elevation ->
+                result[chunk[index].key()] = elevation.elevation
             }
         }
-
-        points.forEach { p ->
-            result.putIfAbsent(p.key(), DemoTerrain.elevation(p))
-        }
+        ensureComplete(points, result, "Google")
         return result
+    }
+
+    private fun ensureComplete(
+        points: List<GeoPoint>,
+        values: Map<String, Double>,
+        source: String,
+    ) {
+        val missing = points.firstOrNull { it.key() !in values }
+        if (missing != null) {
+            throw ElevationDataException(
+                String.format(
+                    Locale.US,
+                    "%s elevation is missing near %.6f, %.6f. Calculation stopped.",
+                    source,
+                    missing.lat,
+                    missing.lon,
+                ),
+            )
+        }
     }
 
     private interface ElevationService {
         @GET("elevation/json")
         suspend fun getElevation(
             @Query("locations") locations: String,
-            @Query("key") key: String
+            @Query("key") key: String,
         ): ElevationResponse
     }
 
     private data class ElevationResponse(
         val status: String,
-        val results: List<ElevationResult> = emptyList()
+        val results: List<ElevationResult> = emptyList(),
+        @SerializedName("error_message") val errorMessage: String? = null,
     )
 
     private data class ElevationResult(
         val elevation: Double,
-        val resolution: Double? = null
+        val resolution: Double? = null,
     )
 
     companion object {
-        private const val TAG = "ElevationRepo"
         private const val BATCH_SIZE = 100
     }
 }
 
-/**
- * Elevation map with optional continuous [terrain] surface + nearest-neighbor fallback.
- */
+/** A complete fixed grid or a continuous local DEM surface. */
 class ElevationGrid(
     private val byKey: Map<String, Double>,
     val useDemo: Boolean,
-    /** Local DEM terrain engine surface (bilinear). Preferred when present. */
-    val terrain: com.viewshed.app.viewshed.terrain.TerrainGrid? = null,
+    val terrain: TerrainGrid? = null,
+    val demSource: DemSource? = null,
 ) {
-    private val samples: List<Pair<GeoPoint, Double>> by lazy {
-        byKey.mapNotNull { (k, elev) ->
-            val parts = k.split(',')
-            if (parts.size != 2) return@mapNotNull null
-            val lat = parts[0].toDoubleOrNull() ?: return@mapNotNull null
-            val lon = parts[1].toDoubleOrNull() ?: return@mapNotNull null
-            GeoPoint(lat, lon) to elev
-        }
-    }
-
-    fun elevation(point: GeoPoint, maxNeighborM: Double = 75.0): Double {
-        // Continuous local DEM first (true terrain engine)
+    fun elevation(point: GeoPoint): Double {
+        demSource?.elevation(point)?.let { return it }
         terrain?.sampleBilinear(point.lat, point.lon)?.let { return it }
-
         byKey[point.key()]?.let { return it }
-        byKey[point.key(5)]?.let { return it }
-        byKey[point.key(7)]?.let { return it }
-
-        if (useDemo || samples.isEmpty()) {
-            return DemoTerrain.elevation(point)
-        }
-
-        var best = Double.MAX_VALUE
-        var bestElev: Double? = null
-        val latScale = 111_320.0
-        val lonScale = 111_320.0 * cos(Math.toRadians(point.lat)).coerceAtLeast(0.2)
-        val maxDegLat = maxNeighborM / latScale
-        val maxDegLon = maxNeighborM / lonScale
-
-        for ((p, elev) in samples) {
-            val dLat = kotlin.math.abs(p.lat - point.lat)
-            val dLon = kotlin.math.abs(p.lon - point.lon)
-            if (dLat > maxDegLat || dLon > maxDegLon) continue
-            val dy = dLat * latScale
-            val dx = dLon * lonScale
-            val d = sqrt(dx * dx + dy * dy)
-            if (d < best) {
-                best = d
-                bestElev = elev
-            }
-        }
-        return bestElev ?: DemoTerrain.elevation(point)
+        if (useDemo) return DemoTerrain.elevation(point)
+        throw ElevationDataException(
+            String.format(
+                Locale.US,
+                "Elevation is missing near %.6f, %.6f. Calculation stopped.",
+                point.lat,
+                point.lon,
+            ),
+        )
     }
 }

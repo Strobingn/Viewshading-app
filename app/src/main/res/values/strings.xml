@@ -17,7 +17,9 @@
     <string name="use_demo_terrain">Demo terrain (offline)</string>
     <string name="include_curvature">Earth curvature + refraction</string>
     <string name="refraction_coeff">Refraction coefficient</string>
-    <string name="long_press_hint">Long-press map to place observer · drag sheet up for params</string>
+    <string name="long_press_hint">Long-press map to place observer · tap or drag up for options</string>
+    <string name="expand_controls">Expand analysis controls</string>
+    <string name="no_maps_key_hint">Demo terrain is ready · add a Maps key to load map tiles</string>
     <string name="export_geojson">GeoJSON</string>
     <string name="export_kml">KML</string>
     <string name="clear">Clear</string>
@@ -40,6 +42,9 @@
     <string name="quality_fast">Fast</string>
     <string name="quality_balanced">Balanced</string>
     <string name="quality_accurate">Accurate</string>
+    <string name="adaptive_quality">Adaptive quality for heat, battery, and memory</string>
+    <string name="background_processing">Durable background analysis (survives leaving app)</string>
+    <string name="compute_status_starting">Compute: checking device health…</string>
     <string name="adaptive_sampling">Adaptive sampling (experimental)</string>
     <string name="binary_horizon">Binary-search horizon (experimental)</string>
     <string name="parallel_rays">Parallel rays (faster)</string>
@@ -59,6 +64,8 @@
     <string name="theme_dialog_title">Theme</string>
     <string name="settings_done">Done</string>
     <string name="field_tools">Field tools</string>
+    <string name="btn_field_projects">Field projects · GPS waypoints · track recording</string>
+    <string name="btn_terrain_ar">Terrain AR camera · compass · feature leads</string>
     <string name="cache_offline">Cache offline pack</string>
     <string name="manage_offline">Manage packs</string>
     <string name="use_offline_pack">Use offline elevation only</string>
@@ -91,10 +98,14 @@
     <string name="terrain_loaded">Terrain: %1$s · %2$d×%3$d · elev %4$.0f–%5$.0f m</string>
     <string name="btn_load_dem">Load DEM…</string>
     <string name="btn_demo_dem">Demo DEM grid</string>
+    <string name="btn_terrain_lab">Open full-screen Terrain Lab (DEM + LAS/LAZ)</string>
+    <string name="btn_manage_dem">Manage offline DEMs · import · download</string>
+    <string name="btn_remote_layers">ArcGIS · WMS · WCS · XYZ map layers</string>
     <string name="use_cloud_backend">Use Oracle / cloud backend</string>
     <string name="backend_url_hint">Backend URL (http://IP:8000)</string>
     <string name="backend_url_default">http://129.80.174.236:8000</string>
     <string name="btn_test_backend">Test backend</string>
+    <string name="btn_collaboration">Team projects · sync · comments · versions</string>
     <string name="btn_intervis">Intervis</string>
     <string name="btn_cumulative">Cumulative</string>
     <string name="btn_frequency">Frequency</string>
@@ -107,6 +118,7 @@
     <string name="btn_geotag_photo">Geotag photo</string>
     <string name="export_gpx">GPX</string>
     <string name="export_csv">CSV</string>
+    <string name="export_more">More exports: SHP · KMZ · image · QR · bundle</string>
     <string name="perf_idle">Perf: idle</string>
     <string name="add_favorite">Save favorite</string>
     <string name="favorite_name">Name this location</string>

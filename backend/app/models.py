@@ -10,6 +10,7 @@ class Observer(BaseModel):
 
 class ViewshedRequest(BaseModel):
     observer: Observer
+    target_height_m: float = Field(0.0, ge=0.0, le=200.0)
     max_distance_m: float = Field(5000.0, ge=100, le=50000)
     num_rays: int = Field(72, ge=8, le=720)
     samples_per_ray: int = Field(80, ge=10, le=500)

@@ -1,6 +1,7 @@
 package com.viewshed.app.data
 
 import com.viewshed.app.viewshed.GeoPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -64,6 +65,8 @@ object ElevationDataSources {
                 }
             }
             out
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             null
         }

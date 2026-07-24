@@ -17,16 +17,16 @@ For agents and terminal workflows (Android CLI, build/deploy, skills), see **[AG
 
 1. Clone or copy this folder into Android Studio as new project.
 2. Get Google Maps API key + Elevation API key from Google Cloud Console (enable Maps SDK for Android + Elevation API).
-3. Replace `YOUR_API_KEY` in AndroidManifest.xml and code.
+3. Copy `secrets.properties.template` to the gitignored `secrets.properties` file and set `MAPS_API_KEY`.
 4. Build & Run on device/emulator (needs internet for real elevation + maps tiles).
-5. Long-press on map to place observer → tap "Calculate Viewshed".
-6. For offline/demo: Toggle "Use Demo Terrain" – uses synthetic hills around Newburgh.
+5. Long-press the map to place an observer → tap **Calculate**.
+6. For offline/demo use, enable **Demo terrain (offline)**.
 
 ## Features
 - Google Maps SDK with current location, search, long-press marker.
-- Bottom sheet or dialog for params: height (1.6m default), max dist (5km default), rays (72 default = 5° steps), sample step.
+- Responsive full-height bottom sheet for parameters, data sources, analysis, field tools, and export; its collapsed state keeps the map usable.
 - Real-time progress.
-- Visible polygon (green semi-transparent).
+- Neutral translucent visible-cell overlay that leaves hidden valleys unfilled.
 - Export visible area as GeoJSON (share/save).
 - Multiple observers mode (cumulative).
 - Settings for curvature/refraction (default 0.13 refraction coeff).
@@ -35,7 +35,7 @@ For agents and terminal workflows (Android CLI, build/deploy, skills), see **[AG
 ## Architecture
 - Pure Kotlin + Google Play Services Maps.
 - No heavy GIS libs for core (lightweight for mobile).
-- Optional: Call your Python/FastAPI + rasterio/GDAL backend for full raster viewshed from high-res DEM (NYS 1m LiDAR recommended for Hudson area).
+- Optional: Call the included Python/FastAPI backend. Its JSON endpoint uses the same terrain-horizon visibility model as Android; DEM upload plumbing is present while full raster sampling remains planned.
 - Backend code included in `backend/` folder (Docker ready).
 
 ## Data Sources for Hudson/Newburgh NY
@@ -84,7 +84,7 @@ These directly improve calculation correctness.
 
 ✅ Wang et al. viewshed algorithm
 ✅ Terrain shadow handling
-✅ Adaptive sampling
+Fixed-grid sampling (adaptive/binary shortcuts are disabled because visibility is non-monotonic)
 ✅ Multi-threaded ray casting
 ✅ Horizon calculation
 ✅ Elevation profile generation

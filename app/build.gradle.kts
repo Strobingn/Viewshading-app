@@ -7,14 +7,14 @@ plugins {
 
 android {
     namespace = "com.viewshed.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.viewshed.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.6.1"
+        versionCode = 11
+        versionName = "1.6.2"
         // Oracle Cloud shared backend (Viewshade + Find It)
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"http://129.80.174.236:8000\"")
         // Optional: ./gradlew assembleDebug -PenableVulkanNative=true
@@ -74,6 +74,13 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("mil.nga:tiff:3.0.0")
+    implementation("com.github.mreutegg:laszip4j:0.21")
+    implementation("com.google.zxing:core:3.5.4")
+    implementation("androidx.camera:camera-camera2:1.6.1")
+    implementation("androidx.camera:camera-lifecycle:1.6.1")
+    implementation("androidx.camera:camera-view:1.6.1")
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

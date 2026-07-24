@@ -7,13 +7,17 @@ object GeoExport {
         multiObserver: Boolean
     ): String {
         val features = results.mapIndexed { index, r ->
-            val coords = r.boundary.joinToString(",") { "[${it.lon},${it.lat}]" }
+            val sectors = exportSectors(r)
+            val coordinates = sectors.joinToString(",") { boundary ->
+                val ring = closedRing(boundary).joinToString(",") { "[${it.lon},${it.lat}]" }
+                "[[$ring]]"
+            }
             """
             {
               "type": "Feature",
               "geometry": {
-                "type": "Polygon",
-                "coordinates": [[$coords]]
+                "type": "MultiPolygon",
+                "coordinates": [$coordinates]
               },
               "properties": {
                 "observer_index": $index,
@@ -26,8 +30,10 @@ object GeoExport {
                 "max_range_m": ${r.stats.maxRangeM},
                 "avg_range_m": ${r.stats.avgRangeM},
                 "area_km2": ${r.stats.areaKm2},
+                "visible_cells": ${r.stats.visibleCells},
+                "total_cells": ${r.stats.totalCells},
                 "demo_terrain": ${r.params.useDemoTerrain},
-                "description": "Viewshed visible area"
+                "description": "Sampled terrain visibility cells"
               }
             }
             """.trimIndent()
@@ -38,7 +44,8 @@ object GeoExport {
               "type": "FeatureCollection",
               "properties": {
                 "multi_observer": $multiObserver,
-                "count": ${results.size}
+                "count": ${results.size},
+                "overlap_removed": false
               },
               "features": [$features]
             }
@@ -47,8 +54,18 @@ object GeoExport {
 
     fun toKml(results: List<ViewshedResult>): String {
         val placemarks = results.mapIndexed { index, r ->
-            val coords = r.boundary.joinToString(" ") { "${it.lon},${it.lat},0" }
             val color = KML_COLORS[index % KML_COLORS.size]
+            val polygons = exportSectors(r).joinToString("\n") { boundary ->
+                val coordinates = closedRing(boundary)
+                    .joinToString(" ") { "${it.lon},${it.lat},0" }
+                """
+                <Polygon>
+                  <outerBoundaryIs>
+                    <LinearRing><coordinates>$coordinates</coordinates></LinearRing>
+                  </outerBoundaryIs>
+                </Polygon>
+                """.trimIndent()
+            }
             """
             <Placemark>
               <name>Viewshed ${index + 1}</name>
@@ -58,15 +75,9 @@ object GeoExport {
               </description>
               <Style>
                 <PolyStyle><color>$color</color></PolyStyle>
-                <LineStyle><color>ff40a000</color><width>2</width></LineStyle>
+                <LineStyle><color>ffbdbdbd</color><width>1</width></LineStyle>
               </Style>
-              <Polygon>
-                <outerBoundaryIs>
-                  <LinearRing>
-                    <coordinates>$coords</coordinates>
-                  </LinearRing>
-                </outerBoundaryIs>
-              </Polygon>
+              <MultiGeometry>$polygons</MultiGeometry>
             </Placemark>
             <Placemark>
               <name>Observer ${index + 1}</name>
@@ -99,13 +110,16 @@ object GeoExport {
             """.trimIndent()
         }.joinToString("\n")
         val trks = results.mapIndexed { i, r ->
-            val pts = r.boundary.joinToString("\n") {
-                """<trkpt lat="${it.lat}" lon="${it.lon}"></trkpt>"""
+            val segments = exportSectors(r).joinToString("\n") { boundary ->
+                val points = closedRing(boundary).joinToString("\n") {
+                    """<trkpt lat="${it.lat}" lon="${it.lon}"></trkpt>"""
+                }
+                "<trkseg>$points</trkseg>"
             }
             """
-            <trk><name>Viewshed ${i + 1}</name><trkseg>
-            $pts
-            </trkseg></trk>
+            <trk><name>Viewshed ${i + 1}</name>
+            $segments
+            </trk>
             """.trimIndent()
         }.joinToString("\n")
         return """
@@ -153,6 +167,14 @@ object GeoExport {
             """.trimIndent()
         }.joinToString(",")
         return """{"type":"FeatureCollection","features":[$features]}"""
+    }
+
+    private fun exportSectors(result: ViewshedResult): List<List<GeoPoint>> =
+        result.visibleSectors.map { it.boundary }.ifEmpty { listOf(result.boundary) }
+
+    private fun closedRing(points: List<GeoPoint>): List<GeoPoint> {
+        if (points.isEmpty() || points.first() == points.last()) return points
+        return points + points.first()
     }
 
     // AABBGGRR translucent greys (no green)

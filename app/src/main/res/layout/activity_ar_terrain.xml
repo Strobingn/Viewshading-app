@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/arRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/arPreview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:implementationMode="performance"
+        app:scaleType="fillCenter" />
+
+    <com.viewshed.app.ui.ArTerrainOverlayView
+        android:id="@+id/arOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="Terrain feature camera overlay" />
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/arToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="#B3000000"
+        android:minHeight="56dp"
+        app:navigationIcon="@android:drawable/ic_media_previous"
+        app:title="Terrain AR"
+        app:titleTextColor="#FFFFFF"
+        app:subtitle="Yellow leads require field verification"
+        app:subtitleTextColor="#DDFFFFFF" />
+
+    <TextView
+        android:id="@+id/tvArStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#B3000000"
+        android:padding="16dp"
+        android:text="Starting camera, compass, and GPS…"
+        android:textColor="#FFFFFF"
+        android:textAppearance="?attr/textAppearanceBodyMedium" />
+</FrameLayout>

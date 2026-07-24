@@ -30,19 +30,21 @@ class SessionHistory(context: Context) {
     fun list(): List<HistoryEntry> = load().sortedByDescending { it.timestamp }
 
     fun add(result: ViewshedResult, label: String = "Viewshed") {
-        val e = HistoryEntry(
-            lat = result.observer.lat,
-            lon = result.observer.lon,
-            eyeHeightM = result.params.eyeHeightM,
-            maxDistKm = result.params.maxDistKm,
-            areaKm2 = result.stats.areaKm2,
-            maxRangeKm = result.stats.maxRangeKm,
-            label = label
-        )
-        val all = load()
-        all.add(0, e)
-        while (all.size > MAX) all.removeAt(all.lastIndex)
-        save(all)
+        synchronized(FILE_LOCK) {
+            val e = HistoryEntry(
+                lat = result.observer.lat,
+                lon = result.observer.lon,
+                eyeHeightM = result.params.eyeHeightM,
+                maxDistKm = result.params.maxDistKm,
+                areaKm2 = result.stats.areaKm2,
+                maxRangeKm = result.stats.maxRangeKm,
+                label = label
+            )
+            val all = load()
+            all.add(0, e)
+            while (all.size > MAX) all.removeAt(all.lastIndex)
+            save(all)
+        }
     }
 
     fun search(query: String): List<HistoryEntry> {
@@ -55,7 +57,7 @@ class SessionHistory(context: Context) {
         }
     }
 
-    fun clear() = save(mutableListOf())
+    fun clear() = synchronized(FILE_LOCK) { save(mutableListOf()) }
 
     private fun load(): MutableList<HistoryEntry> {
         if (!file.exists()) return mutableListOf()
@@ -72,5 +74,6 @@ class SessionHistory(context: Context) {
 
     companion object {
         private const val MAX = 50
+        private val FILE_LOCK = Any()
     }
 }

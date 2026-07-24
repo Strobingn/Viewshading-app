@@ -8,25 +8,6 @@ import org.junit.Test
 
 class ProfessionalAnalysisTest {
 
-    private fun flatGrid(height: Double = 100.0): ElevationGrid {
-        // Nearest-neighbor falls back to demo when empty & useDemo — use explicit map
-        val pts = mutableMapOf<String, Double>()
-        for (lat in -2..2) {
-            for (lon in -2..2) {
-                val p = GeoPoint(lat * 0.01, lon * 0.01)
-                pts[p.key()] = height
-            }
-        }
-        // denser around origin
-        for (i in 0..50) {
-            for (j in 0..50) {
-                val p = GeoPoint(-0.02 + i * 0.0008, -0.02 + j * 0.0008)
-                pts[p.key()] = height
-            }
-        }
-        return ElevationGrid(pts, useDemo = false)
-    }
-
     @Test
     fun bearing_east_is_about_90() {
         val a = GeoPoint(0.0, 0.0)
@@ -39,10 +20,15 @@ class ProfessionalAnalysisTest {
     fun intervisibility_flat_is_visible() {
         val a = GeoPoint(0.0, 0.0)
         val b = GeoMath.destination(a, 45.0, 500.0)
-        val grid = flatGrid(50.0)
+        val samples = 40
+        val grid = ElevationGrid(
+            ProfessionalAnalysis.intervisibilitySamplePoints(a, b, samples)
+                .associate { it.key() to 50.0 },
+            useDemo = false,
+        )
         val r = ProfessionalAnalysis.intervisibility(
             a, b, grid, eyeHeightM = 2.0, targetHeightM = 2.0,
-            samples = 40, useCurvature = false
+            samples = samples, useCurvature = false
         )
         assertTrue(r.visible)
         assertTrue(r.distanceM > 400)

@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
+ENV VIEWSHADE_UPLOAD_DIR=/app/uploads
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

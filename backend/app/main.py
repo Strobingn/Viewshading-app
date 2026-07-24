@@ -2,11 +2,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os
-import tempfile
 import shutil
-from typing import Optional
+import tempfile
+from pathlib import Path
 
-from .models import ViewshedRequest, ViewshedResponse, Observer
+from .models import ViewshedRequest, ViewshedResponse
 from .viewshed import compute_viewshed
 from .terrain_api import (
     ElevationSampleRequest,
@@ -14,6 +14,7 @@ from .terrain_api import (
     analyze_terrain,
     sample_elevations,
 )
+from .collaboration import router as collaboration_router
 
 app = FastAPI(
     title="Viewshade Shared Backend",
@@ -30,9 +31,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(collaboration_router)
 
-UPLOAD_DIR = "/app/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = Path(
+    os.getenv(
+        "VIEWSHADE_UPLOAD_DIR",
+        str(Path(tempfile.gettempdir()) / "viewshade-uploads"),
+    )
+)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/")
@@ -47,6 +54,7 @@ def root():
             "POST /viewshed/upload": "Viewshade: DEM upload + viewshed",
             "POST /elevation/sample": "Both: lat/lon → elevation_m[]",
             "POST /terrain/analyze": "Find It: hillshade / SVF / disturbance grid",
+            "/collaboration/projects": "Self-hosted projects, versions, comments, and roles",
         },
     }
 
@@ -78,6 +86,7 @@ def viewshed_json(req: ViewshedRequest):
         observer_lat=req.observer.lat,
         observer_lon=req.observer.lon,
         eye_height_m=req.observer.height_m,
+        target_height_m=req.target_height_m,
         max_distance_m=req.max_distance_m,
         num_rays=req.num_rays,
         samples_per_ray=req.samples_per_ray,
@@ -93,38 +102,89 @@ async def viewshed_with_dem(
     lat: float = Form(...),
     lon: float = Form(...),
     height_m: float = Form(1.6),
+    target_height_m: float = Form(0.0),
     max_distance_m: float = Form(5000.0),
     num_rays: int = Form(72),
     samples_per_ray: int = Form(80),
     refraction_coeff: float = Form(0.13),
     use_curvature: bool = Form(True),
 ):
-    """
-    Upload a DEM (GeoTIFF or ASC) and run viewshed against it.
-    Currently falls back to demo terrain if the file cannot be read.
-    Full rasterio sampling will be wired in the next iteration.
-    """
+    """Upload a georeferenced DEM and calculate against its actual elevation band."""
     suffix = os.path.splitext(file.filename or "")[1].lower()
     if suffix not in {".tif", ".tiff", ".asc", ".txt", ".xyz"}:
         raise HTTPException(400, "Supported formats: .tif, .tiff, .asc, .txt, .xyz")
 
-    # save upload
-    dest = os.path.join(UPLOAD_DIR, file.filename or "upload.dem")
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # Keep client filenames out of the filesystem path and avoid collisions.
+    suffix = suffix if suffix else ".dem"
+    temp_path: Path
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        suffix=suffix,
+        prefix="dem_",
+        dir=UPLOAD_DIR,
+        delete=False,
+    ) as f:
+        temp_path = Path(f.name)
+        copied = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > 1024 * 1024 * 1024:
+                raise HTTPException(413, "DEM upload exceeds the 1 GiB service limit")
+            f.write(chunk)
 
-    # TODO: open with rasterio and sample real elevations
-    # For now we still return a valid viewshed so the client can be tested end-to-end.
-    result = compute_viewshed(
-        observer_lat=lat,
-        observer_lon=lon,
-        eye_height_m=height_m,
-        max_distance_m=max_distance_m,
-        num_rays=num_rays,
-        samples_per_ray=samples_per_ray,
-        refraction_coeff=refraction_coeff,
-        use_curvature=use_curvature,
-    )
-    result["meta"]["dem_file"] = file.filename
-    result["meta"]["note"] = "DEM uploaded but real sampling not yet active – using demo terrain"
-    return JSONResponse(result)
+    try:
+        import rasterio
+        from rasterio.warp import transform
+
+        with rasterio.open(temp_path) as dataset:
+            if dataset.count < 1 or dataset.crs is None:
+                raise HTTPException(422, "DEM must contain an elevation band and a defined CRS")
+
+            def sample_dem(sample_lat: float, sample_lon: float) -> float:
+                if dataset.crs.to_epsg() == 4326:
+                    x, y = sample_lon, sample_lat
+                else:
+                    xs, ys = transform("EPSG:4326", dataset.crs, [sample_lon], [sample_lat])
+                    x, y = xs[0], ys[0]
+                if not (dataset.bounds.left <= x <= dataset.bounds.right and dataset.bounds.bottom <= y <= dataset.bounds.top):
+                    raise ValueError(f"DEM does not cover {sample_lat:.6f}, {sample_lon:.6f}")
+                value = float(next(dataset.sample([(x, y)], indexes=1))[0])
+                if not value == value or (dataset.nodata is not None and abs(value - dataset.nodata) <= 1e-9):
+                    raise ValueError(f"DEM contains nodata at {sample_lat:.6f}, {sample_lon:.6f}")
+                return value
+
+            try:
+                result = compute_viewshed(
+                    observer_lat=lat,
+                    observer_lon=lon,
+                    eye_height_m=height_m,
+                    target_height_m=target_height_m,
+                    max_distance_m=max_distance_m,
+                    num_rays=num_rays,
+                    samples_per_ray=samples_per_ray,
+                    refraction_coeff=refraction_coeff,
+                    use_curvature=use_curvature,
+                    elevation_fn=sample_dem,
+                )
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
+            result["meta"].update(
+                {
+                    "dem_file": file.filename,
+                    "terrain": "uploaded-dem",
+                    "crs": dataset.crs.to_string(),
+                    "width": dataset.width,
+                    "height": dataset.height,
+                    "nodata": dataset.nodata,
+                }
+            )
+            return JSONResponse(result)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(422, f"Unable to read DEM: {error}") from error
+    finally:
+        temp_path.unlink(missing_ok=True)

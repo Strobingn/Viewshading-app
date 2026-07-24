@@ -1,12 +1,16 @@
 package com.viewshed.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.location.Geocoder
 import android.location.Location
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -18,13 +22,15 @@ import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -33,30 +39,49 @@ import com.google.android.gms.maps.MapsInitializer
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.android.gms.maps.model.Circle
+import com.google.android.gms.maps.model.CircleOptions
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.Polygon
 import com.google.android.gms.maps.model.PolygonOptions
+import com.google.android.gms.maps.model.Polyline
+import com.google.android.gms.maps.model.PolylineOptions
+import com.google.android.gms.maps.model.TileOverlay
+import com.google.android.gms.maps.model.TileOverlayOptions
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import com.viewshed.app.databinding.ActivityMainBinding
+import com.viewshed.app.data.RemoteLayerType
+import com.viewshed.app.data.RemoteMapLayerSpec
+import com.viewshed.app.data.RemoteMapLayerStore
+import com.viewshed.app.data.RemoteMapLayers
 import com.viewshed.app.performance.PerformanceMonitor
+import com.viewshed.app.performance.AdaptiveComputeController
+import com.viewshed.app.performance.ComputeHealth
 import com.viewshed.app.viewshed.AnalysisPreset
 import com.viewshed.app.viewshed.AnalysisSession
 import com.viewshed.app.viewshed.AnalysisSessionManager
+import com.viewshed.app.viewshed.AdvancedExport
 import com.viewshed.app.viewshed.CompassHelper
 import com.viewshed.app.viewshed.ElevationRepository
+import com.viewshed.app.viewshed.ElevationGrid
 import com.viewshed.app.viewshed.FavoritesManager
 import com.viewshed.app.viewshed.FieldDataForms
 import com.viewshed.app.viewshed.FieldNotesManager
 import com.viewshed.app.viewshed.GeoExport
 import com.viewshed.app.viewshed.GeoPoint
 import com.viewshed.app.viewshed.MeasurementTool
+import com.viewshed.app.viewshed.LocalDemLoader
+import com.viewshed.app.viewshed.LocalDemStore
+import com.viewshed.app.viewshed.MappedFloatDem
+import com.viewshed.app.viewshed.RasterDemSource
 import com.viewshed.app.viewshed.OfflineMapCache
 import com.viewshed.app.viewshed.PhotoGeotagHelper
 import com.viewshed.app.viewshed.ProfessionalAnalysis
+import com.viewshed.app.viewshed.QrExport
 import com.viewshed.app.viewshed.SampleQuality
 import com.viewshed.app.viewshed.SessionHistory
 import com.viewshed.app.viewshed.BackendViewshedClient
@@ -65,12 +90,17 @@ import com.viewshed.app.viewshed.ViewshedParams
 import com.viewshed.app.viewshed.ViewshedResult
 import com.viewshed.app.viewshed.VoiceMemoHelper
 import com.viewshed.app.viewshed.VulkanViewshed
+import com.viewshed.app.viewshed.ViewshedComputeWorker
 import com.viewshed.app.viewshed.terrain.TerrainEngine
+import com.viewshed.app.viewshed.terrain.TerrainRaster
+import com.viewshed.app.viewshed.terrain.TerrainWorkspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -95,6 +125,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var sessionHistory: SessionHistory
     private lateinit var fieldForms: FieldDataForms
     private lateinit var photoGeotag: PhotoGeotagHelper
+    private lateinit var remoteLayerStore: RemoteMapLayerStore
+    private lateinit var adaptiveCompute: AdaptiveComputeController
+    private lateinit var localDemStore: LocalDemStore
     private var compass: CompassHelper? = null
 
     private val observers = mutableListOf<GeoPoint>()
@@ -104,23 +137,39 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val noteMarkers = mutableListOf<Marker>()
     private val memoMarkers = mutableListOf<Marker>()
     private val analysisOverlays = mutableListOf<Polygon>()
+    private val analysisLines = mutableListOf<Polyline>()
+    private val analysisCircles = mutableListOf<Circle>()
     private val analysisMarkers = mutableListOf<Marker>()
+    private val measureMarkers = mutableListOf<Marker>()
     private val pathPoints = mutableListOf<GeoPoint>()
+    private val remoteTileOverlays = mutableMapOf<String, TileOverlay>()
+    private val pendingBackgroundResults = mutableListOf<ViewshedResult>()
 
     private var calcJob: Job? = null
+    private var calculationVersion = 0
     /** Prevents slider ↔ text feedback loops while editing viewer height. */
     private var syncingHeight = false
     private var measureA: GeoPoint? = null
-    private var measureLineMarker: Marker? = null
+    private var measureLine: Polyline? = null
     private var pathMode = false
+    private var pendingLocationObserver = false
+    private var systemInsetLeft = 0
+    private var systemInsetRight = 0
+    private var localDemDisplayName: String? = null
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        ) {
-            if (::map.isInitialized) enableMyLocation(centerIfAvailable = true)
+        val granted =
+            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        val shouldPlaceObserver = pendingLocationObserver
+        pendingLocationObserver = false
+        if (granted) {
+            if (::map.isInitialized) {
+                enableMyLocation(centerIfAvailable = !shouldPlaceObserver)
+                if (shouldPlaceObserver) placeObserverAtMyLocation()
+            }
         } else {
             toast("Location denied — Newburgh NY default.")
         }
@@ -142,27 +191,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         else toast("Geotag failed")
     }
 
-    /** Load local DEM (.asc / .csv) into the terrain engine. */
+    /** Load a local GeoTIFF, ESRI ASCII Grid, or elevation CSV into the terrain engine. */
     private val pickDemRequest = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@registerForActivityResult
         lifecycleScope.launch {
             try {
-                val name = uri.lastPathSegment?.substringAfterLast('/') ?: "dem.asc"
-                val grid = withContext(Dispatchers.IO) {
-                    val cache = File(cacheDir, "import_${System.currentTimeMillis()}_$name")
-                    contentResolver.openInputStream(uri)?.use { input ->
-                        cache.outputStream().use { output -> input.copyTo(output) }
-                    } ?: error("Cannot open DEM")
-                    TerrainEngine.loadAuto(cache)
-                }
-                elevationRepo.localTerrain = grid
-                binding.chipElevLocal.isChecked = true
-                binding.switchDemoTerrain.isChecked = false
-                updateTerrainStatus()
-                val s = grid.stats()
-                toast("Terrain loaded: ${grid.name} (${s.validCells} cells)")
+                val name = contentDisplayName(uri)
+                binding.tvTerrainStatus.text = "Importing $name into the offline DEM library…"
+                activateStoredDem(localDemStore.importFromUri(uri, name))
             } catch (e: Exception) {
                 Log.e("Viewshed", "DEM load failed", e)
                 toast("DEM load failed: ${e.message}")
@@ -184,6 +222,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         sessionHistory = SessionHistory(this)
         fieldForms = FieldDataForms(this)
         photoGeotag = PhotoGeotagHelper(this)
+        remoteLayerStore = RemoteMapLayerStore(this)
+        adaptiveCompute = AdaptiveComputeController(this)
+        localDemStore = LocalDemStore(this)
         compass = CompassHelper(this) { deg ->
             runOnUiThread {
                 if (::binding.isInitialized) {
@@ -218,6 +259,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     override fun onDestroy() {
+        adaptiveCompute.stop()
         compass?.stop()
         voiceMemos.release()
         super.onDestroy()
@@ -236,23 +278,51 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.rootCoordinator) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            binding.bottomSheet.updatePadding(bottom = bars.bottom)
+            systemInsetLeft = bars.left
+            systemInsetRight = bars.right
+            binding.bottomSheet.updatePadding(
+                left = bars.left,
+                right = bars.right,
+                bottom = bars.bottom,
+            )
+            bottomSheetBehavior.expandedOffset = bars.top + dp(8)
             val topLp = binding.topBar.layoutParams as ViewGroup.MarginLayoutParams
-            topLp.topMargin = bars.top + (12 * resources.displayMetrics.density).toInt()
+            topLp.topMargin = bars.top + dp(12)
+            topLp.leftMargin = bars.left + dp(12)
+            topLp.rightMargin = bars.right + dp(12)
             binding.topBar.layoutParams = topLp
+            val fabLp = binding.fabColumn.layoutParams as ViewGroup.MarginLayoutParams
+            fabLp.rightMargin = bars.right + dp(16)
+            binding.fabColumn.layoutParams = fabLp
+            updateMapContentPadding()
             insets
         }
 
         binding.bottomSheet.post { updatePeekToActionButtons() }
+        binding.topBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updateMapContentPadding()
+        }
         binding.actionButtons.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updatePeekToActionButtons()
         }
         bottomSheetBehavior.addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
-            override fun onStateChanged(bottomSheet: View, newState: Int) = Unit
+            override fun onStateChanged(bottomSheet: View, newState: Int) {
+                if (newState == BottomSheetBehavior.STATE_COLLAPSED) {
+                    binding.fabColumn.alpha = 1f
+                    setFabsEnabled(true)
+                } else if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                    binding.fabColumn.alpha = 0f
+                    setFabsEnabled(false)
+                }
+            }
+
             override fun onSlide(bottomSheet: View, slideOffset: Float) {
-                positionFabs(bottomSheetBehavior.peekHeight)
+                val progress = slideOffset.coerceIn(0f, 1f)
+                binding.fabColumn.alpha = (1f - progress * 2f).coerceIn(0f, 1f)
+                setFabsEnabled(progress < 0.35f)
             }
         })
+        ViewCompat.requestApplyInsets(binding.rootCoordinator)
     }
 
     private fun updatePeekToActionButtons() {
@@ -264,6 +334,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             bottomSheetBehavior.peekHeight = peek
             bottomSheetBehavior.isFitToContents = false
             positionFabs(peek)
+            updateMapContentPadding()
         }
     }
 
@@ -274,13 +345,37 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.fabColumn.layoutParams = lp
     }
 
+    private fun setFabsEnabled(enabled: Boolean) {
+        binding.fabAddObserver.isEnabled = enabled
+        binding.fabMyLocation.isEnabled = enabled
+    }
+
+    private fun updateMapContentPadding() {
+        if (!::map.isInitialized || !::bottomSheetBehavior.isInitialized) return
+        map.setPadding(
+            systemInsetLeft,
+            binding.topBar.bottom + dp(8),
+            systemInsetRight,
+            bottomSheetBehavior.peekHeight + dp(8),
+        )
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).roundToInt()
+
     private fun setupUi() {
+        val expandSheet = View.OnClickListener {
+            bottomSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        }
+        binding.sheetHandle.setOnClickListener(expandSheet)
+        binding.tvHint.setOnClickListener(expandSheet)
         binding.btnCalculate.setOnClickListener { runCalculation() }
         binding.btnClear.setOnClickListener { clearAll() }
         binding.btnExportGeoJson.setOnClickListener { shareText(GeoExport.toGeoJson(results, multiObserver = binding.switchMultiObserver.isChecked), "application/geo+json", "Viewshed.geojson") }
         binding.btnExportKml.setOnClickListener { shareText(GeoExport.toKml(results), "application/vnd.google-earth.kml+xml", "Viewshed.kml") }
         binding.btnExportGpx.setOnClickListener { shareText(GeoExport.toGpx(results), "application/gpx+xml", "Viewshed.gpx") }
         binding.btnExportCsv.setOnClickListener { shareText(GeoExport.toCsv(results), "text/csv", "Viewshed.csv") }
+        binding.btnExportMore.setOnClickListener { showMoreExports() }
 
         binding.btnSearch.setOnClickListener { searchPlace() }
         binding.etSearch.setOnEditorActionListener { _, actionId, _ ->
@@ -320,6 +415,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.switchDemoTerrain.isChecked = !BuildConfig.HAS_MAPS_API_KEY
         if (!BuildConfig.HAS_MAPS_API_KEY) {
             Log.w(TAG, getString(R.string.no_api_key_demo))
+            binding.tvHint.text = getString(R.string.no_maps_key_hint)
         }
         // Probe optional native path once (never required)
         lifecycleScope.launch(Dispatchers.IO) {
@@ -352,6 +448,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun setupTerrainEngine() {
+        binding.btnTerrainLab.setOnClickListener {
+            startActivity(Intent(this, TerrainLabActivity::class.java))
+        }
         binding.btnLoadDem.setOnClickListener {
             pickDemRequest.launch(
                 arrayOf(
@@ -363,6 +462,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 ),
             )
         }
+        binding.btnRemoteLayers.setOnClickListener { showRemoteLayersDialog() }
+        binding.btnManageDem.setOnClickListener { showDemLibrary() }
         binding.btnDemoDem.setOnClickListener {
             lifecycleScope.launch {
                 val center =
@@ -372,6 +473,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     TerrainEngine.generateDemoRegion(center = center)
                 }
                 elevationRepo.localTerrain = grid
+                elevationRepo.localDemSource = null
+                localDemDisplayName = grid.name
+                TerrainWorkspace.current = withContext(Dispatchers.Default) {
+                    TerrainRaster.from(grid)
+                }
                 binding.chipElevLocal.isChecked = true
                 binding.switchDemoTerrain.isChecked = false
                 updateTerrainStatus()
@@ -379,7 +485,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         }
         binding.chipElevLocal.setOnCheckedChangeListener { _, checked ->
-            if (checked && elevationRepo.localTerrain == null) {
+            if (checked && elevationRepo.localTerrain == null && elevationRepo.localDemSource == null) {
                 // Auto-generate demo region so Local DEM always has a surface
                 binding.btnDemoDem.performClick()
             }
@@ -389,6 +495,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun updateTerrainStatus() {
+        elevationRepo.localDemSource?.let { source ->
+            val bounds = source.bounds
+            binding.tvTerrainStatus.text = String.format(
+                Locale.US,
+                "Terrain: %s · %.5f,%.5f to %.5f,%.5f",
+                localDemDisplayName ?: "GeoTIFF",
+                bounds.south,
+                bounds.west,
+                bounds.north,
+                bounds.east,
+            )
+            return
+        }
         val t = elevationRepo.localTerrain
         if (t == null) {
             binding.tvTerrainStatus.text = getString(R.string.terrain_none)
@@ -406,6 +525,285 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             )
     }
 
+    private suspend fun activateStoredDem(entry: LocalDemStore.Entry) {
+        val file = localDemStore.file(entry)
+        val extension = file.extension.lowercase(Locale.US)
+        if (extension in setOf("tif", "tiff", "asc", "ascii", "grd")) {
+            val parsed = LocalDemLoader.load(file)
+            val source = if (extension in setOf("asc", "ascii", "grd") && parsed is RasterDemSource) {
+                withContext(Dispatchers.IO) {
+                    MappedFloatDem.create(File(cacheDir, "mapped_dems/${entry.id}.float"), parsed)
+                }
+            } else parsed
+            elevationRepo.localDemSource = source
+            elevationRepo.localTerrain = null
+            localDemDisplayName = entry.name
+            (source as? RasterDemSource)?.let { rasterSource ->
+                TerrainWorkspace.current = withContext(Dispatchers.Default) {
+                    TerrainRaster.from(rasterSource, entry.name)
+                }
+            }
+        } else {
+            val grid = withContext(Dispatchers.IO) { TerrainEngine.loadAuto(file) }
+            elevationRepo.localTerrain = grid
+            elevationRepo.localDemSource = null
+            localDemDisplayName = entry.name
+            TerrainWorkspace.current = withContext(Dispatchers.Default) { TerrainRaster.from(grid) }
+        }
+        binding.chipElevLocal.isChecked = true
+        binding.switchDemoTerrain.isChecked = false
+        updateTerrainStatus()
+        toast("Terrain loaded: ${entry.name}")
+    }
+
+    private fun showDemLibrary() {
+        val entries = localDemStore.list()
+        val labels = buildList {
+            add("＋ Import DEM from device")
+            add("↓ Download DEM from URL")
+            entries.forEach { entry -> add("${entry.name} · ${formatBytes(entry.byteCount)}") }
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Offline DEM library")
+            .setMessage("Stored files remain available without network access. Tap a DEM to open or delete it.")
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> binding.btnLoadDem.performClick()
+                    1 -> promptDemDownload()
+                    else -> showStoredDemActions(entries[which - 2])
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showStoredDemActions(entry: LocalDemStore.Entry) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(entry.name)
+            .setMessage("${formatBytes(entry.byteCount)} · ${entry.source.take(180)}")
+            .setItems(arrayOf("Open", "Delete")) { _, which ->
+                if (which == 0) {
+                    lifecycleScope.launch {
+                        try {
+                            activateStoredDem(entry)
+                        } catch (error: Exception) {
+                            toast("DEM open failed: ${error.message}")
+                        }
+                    }
+                } else {
+                    localDemStore.delete(entry)
+                    toast("${entry.name} deleted from offline storage")
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun promptDemDownload() {
+        val name = EditText(this).apply {
+            hint = "Filename, including .tif or .asc"
+            setSingleLine()
+        }
+        val url = EditText(this).apply {
+            hint = "Direct HTTPS GeoTIFF / ASCII Grid URL"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine()
+        }
+        val content = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp(12), dp(4), dp(12), 0)
+            addView(name)
+            addView(url)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Download DEM")
+            .setMessage("The direct file is copied into the offline DEM library (2 GiB maximum).")
+            .setView(content)
+            .setPositiveButton("Download") { _, _ ->
+                lifecycleScope.launch {
+                    try {
+                        binding.tvTerrainStatus.text = "Downloading DEM…"
+                        val entry = localDemStore.download(
+                            url.text?.toString()?.trim().orEmpty(),
+                            name.text?.toString()?.trim().orEmpty(),
+                        )
+                        activateStoredDem(entry)
+                    } catch (error: Exception) {
+                        updateTerrainStatus()
+                        toast("DEM download failed: ${error.message}")
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun contentDisplayName(uri: android.net.Uri): String {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0)?.takeIf(String::isNotBlank)?.let { return it }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "terrain.tif"
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f GiB", bytes / (1024.0 * 1024 * 1024))
+        bytes >= 1024L * 1024 -> String.format(Locale.US, "%.1f MiB", bytes / (1024.0 * 1024))
+        bytes >= 1024L -> String.format(Locale.US, "%.1f KiB", bytes / 1024.0)
+        else -> "$bytes B"
+    }
+
+    private fun restoreRemoteLayers() {
+        if (!::map.isInitialized || !::remoteLayerStore.isInitialized) return
+        remoteLayerStore.list().forEach(::applyRemoteLayer)
+    }
+
+    private fun showRemoteLayersDialog() {
+        val layers = remoteLayerStore.list()
+        val items = buildList {
+            add("＋ Add remote layer")
+            layers.forEach { layer ->
+                val state = if (remoteTileOverlays.containsKey(layer.id)) "visible" else "hidden"
+                add("${layer.name} · ${layer.type.label} · $state")
+            }
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Remote terrain and map layers")
+            .setMessage("Add public XYZ, ArcGIS MapServer, WMS, or WCS endpoints. Layers are saved on this device.")
+            .setItems(items) { _, which ->
+                if (which == 0) chooseRemoteLayerType()
+                else showRemoteLayerActions(layers[which - 1])
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun chooseRemoteLayerType(existing: RemoteMapLayerSpec? = null) {
+        if (existing != null) {
+            promptRemoteLayer(existing.type, existing)
+            return
+        }
+        val types = RemoteLayerType.entries
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Layer service type")
+            .setItems(types.map { it.label }.toTypedArray()) { _, which ->
+                promptRemoteLayer(types[which], null)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun promptRemoteLayer(type: RemoteLayerType, existing: RemoteMapLayerSpec?) {
+        val name = EditText(this).apply {
+            hint = "Display name"
+            setText(existing?.name.orEmpty())
+            setSingleLine()
+        }
+        val url = EditText(this).apply {
+            hint = when (type) {
+                RemoteLayerType.XYZ -> "https://server/{z}/{x}/{y}.png"
+                RemoteLayerType.ARCGIS -> "https://server/arcgis/rest/services/name/MapServer"
+                RemoteLayerType.WMS -> "https://server/geoserver/wms"
+                RemoteLayerType.WCS -> "https://server/geoserver/wcs"
+            }
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(existing?.url.orEmpty())
+            setSingleLine()
+        }
+        val serviceLayer = EditText(this).apply {
+            hint = if (type == RemoteLayerType.WCS) "Coverage identifier" else "Layer name"
+            setText(existing?.layerName.orEmpty())
+            setSingleLine()
+            visibility = if (type == RemoteLayerType.WMS || type == RemoteLayerType.WCS) View.VISIBLE else View.GONE
+        }
+        val opacity = EditText(this).apply {
+            hint = "Opacity 0.0–1.0"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(String.format(Locale.US, "%.2f", existing?.opacity ?: 0.75f))
+            setSingleLine()
+        }
+        val content = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val spacing = dp(12)
+            setPadding(spacing, dp(4), spacing, 0)
+            addView(name)
+            addView(url)
+            addView(serviceLayer)
+            addView(opacity)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(if (existing == null) "Add ${type.label}" else "Edit ${existing.name}")
+            .setMessage(
+                if (type == RemoteLayerType.WCS) {
+                    "WCS viewing requires a server that supports image/png GetCoverage responses."
+                } else {
+                    "Only add endpoints you trust; tile requests go directly from this device to that server."
+                },
+            )
+            .setView(content)
+            .setPositiveButton(R.string.save) { _, _ ->
+                val spec = RemoteMapLayerSpec(
+                    id = existing?.id ?: java.util.UUID.randomUUID().toString(),
+                    name = name.text?.toString()?.trim().orEmpty(),
+                    type = type,
+                    url = url.text?.toString()?.trim().orEmpty(),
+                    layerName = serviceLayer.text?.toString()?.trim().orEmpty(),
+                    opacity = (opacity.text?.toString()?.toFloatOrNull() ?: 0.75f).coerceIn(0f, 1f),
+                )
+                try {
+                    RemoteMapLayers.validate(spec)
+                    remoteLayerStore.save(spec)
+                    applyRemoteLayer(spec)
+                    toast("${spec.name} added to the map")
+                } catch (error: IllegalArgumentException) {
+                    toast(error.message ?: "Invalid layer settings")
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showRemoteLayerActions(spec: RemoteMapLayerSpec) {
+        val visible = remoteTileOverlays.containsKey(spec.id)
+        val actions = arrayOf(if (visible) "Hide layer" else "Show layer", "Edit", "Delete")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(spec.name)
+            .setMessage(spec.url)
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> if (visible) {
+                        remoteTileOverlays.remove(spec.id)?.remove()
+                    } else {
+                        applyRemoteLayer(spec)
+                    }
+                    1 -> chooseRemoteLayerType(spec)
+                    2 -> {
+                        remoteTileOverlays.remove(spec.id)?.remove()
+                        remoteLayerStore.delete(spec.id)
+                        toast("${spec.name} deleted")
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun applyRemoteLayer(spec: RemoteMapLayerSpec) {
+        if (!::map.isInitialized) return
+        try {
+            remoteTileOverlays.remove(spec.id)?.remove()
+            val overlay = map.addTileOverlay(
+                TileOverlayOptions()
+                    .tileProvider(RemoteMapLayers.provider(spec))
+                    .transparency((1f - spec.opacity).coerceIn(0f, 1f))
+                    .fadeIn(true)
+                    .zIndex(2f),
+            )
+            if (overlay != null) remoteTileOverlays[spec.id] = overlay
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "Invalid remote map layer ${spec.name}", error)
+        }
+    }
+
     private fun compassCardinal(deg: Float): String {
         val dirs = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
         val i = ((deg + 22.5f) / 45f).toInt() % 8
@@ -413,6 +811,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun setupFieldTools() {
+        binding.btnFieldProjects.setOnClickListener {
+            startActivity(Intent(this, FieldProjectActivity::class.java))
+        }
+        binding.btnTerrainAr.setOnClickListener {
+            startActivity(Intent(this, ArTerrainActivity::class.java))
+        }
         binding.btnCacheOffline.setOnClickListener { cacheOfflinePack() }
         binding.btnManageOffline.setOnClickListener { showManageOfflineDialog() }
         binding.btnAddNote.setOnClickListener { promptAddNote() }
@@ -428,9 +832,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
         binding.btnListMemos.setOnClickListener { showMemosList() }
         binding.switchMeasureMode.setOnCheckedChangeListener { _, checked ->
-            measureA = null
-            measureLineMarker?.remove()
-            measureLineMarker = null
+            clearMeasurementOverlays()
             binding.tvMeasureResult.visibility = if (checked) View.VISIBLE else View.GONE
             if (checked) {
                 binding.tvMeasureResult.text = "Measure: tap two points on the map"
@@ -449,6 +851,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.chipQualityLow.setOnClickListener { applyQuality(SampleQuality.LOW) }
         binding.chipQualityMed.setOnClickListener { applyQuality(SampleQuality.MEDIUM) }
         binding.chipQualityHigh.setOnClickListener { applyQuality(SampleQuality.HIGH) }
+        adaptiveCompute.start(::updateComputeHealth)
+        updateComputeHealth(adaptiveCompute.snapshot())
+        WorkManager.getInstance(this).getWorkInfosByTagLiveData(ViewshedComputeWorker.TAG)
+            .observe(this) { work -> work.forEach(::handleBackgroundWork) }
     }
 
     private fun applyQuality(q: SampleQuality) {
@@ -487,8 +893,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             .setSingleChoiceItems(labels, checked) { dialog, which ->
                 ThemePreferences.setMode(this, modes[which])
                 dialog.dismiss()
-                // Night mode change recreates activities when needed
-                recreate()
             }
             .setNegativeButton(R.string.settings_done, null)
             .show()
@@ -503,7 +907,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         binding.sliderViewerHeight.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             if (!fromUser || syncingHeight) return@addOnChangeListener
-            // Slider is in centimetres (0–1000)
+            // Slider stores tenths of a metre (17 == 1.7 m).
             setViewerHeightM(value / 10.0, fromUser = true, source = HeightSource.SLIDER)
         }
 
@@ -525,6 +929,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 setViewerHeightM(v, fromUser = true, source = HeightSource.TEXT)
             }
         })
+        binding.etObserverHeight.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                setViewerHeightM(
+                    currentViewerHeightM(),
+                    fromUser = true,
+                    source = HeightSource.BUTTON,
+                )
+            }
+        }
 
         binding.chipHeightProne.setOnClickListener { setViewerHeightM(0.5, fromUser = true, source = HeightSource.CHIP) }
         binding.chipHeightStanding.setOnClickListener { setViewerHeightM(1.7, fromUser = true, source = HeightSource.CHIP) }
@@ -601,6 +1014,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         map.uiSettings.isMyLocationButtonEnabled = false
         map.uiSettings.isCompassEnabled = true
         map.uiSettings.isMapToolbarEnabled = false
+        updateMapContentPadding()
 
         map.setOnMapClickListener { latLng ->
             val p = GeoPoint(latLng.latitude, latLng.longitude)
@@ -639,10 +1053,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Default camera first; GPS may override — never overwrite GPS with Newburgh later.
         moveToDefaultLocation()
         refreshFieldMarkers()
+        restoreRemoteLayers()
+        pendingBackgroundResults.toList().forEach(::displayBackgroundResult)
+        pendingBackgroundResults.clear()
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (hasLocationPermission()) {
             enableMyLocation(centerIfAvailable = true)
         } else {
             locationPermissionRequest.launch(
@@ -663,10 +1078,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun enableMyLocation(centerIfAvailable: Boolean = true) {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) return
+        // Both guarded calls accept either fine or coarse location permission.
+        if (!hasLocationPermission()) return
         try {
             map.isMyLocationEnabled = true
         } catch (e: Exception) {
@@ -692,10 +1107,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             .addOnFailureListener { Log.w(TAG, "lastLocation failed", it) }
     }
 
+    @SuppressLint("MissingPermission")
     private fun placeObserverAtMyLocation() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (!hasLocationPermission()) {
+            pendingLocationObserver = true
             locationPermissionRequest.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -719,8 +1134,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     14f
                 )
             )
+        }.addOnFailureListener { error ->
+            Log.w(TAG, "lastLocation failed", error)
+            toast("Location unavailable — check GPS and try again.")
         }
     }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
 
     private fun placeObserver(point: GeoPoint, clearOthers: Boolean) {
         if (!::map.isInitialized) return
@@ -758,20 +1182,29 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         toast("${preset.label} preset applied (viewer ${p.eyeHeightM} m)")
     }
 
-    private fun readParams(): ViewshedParams = ViewshedParams(
-        eyeHeightM = currentViewerHeightM(),
-        targetHeightM = binding.etTargetHeight.text?.toString()?.toDoubleOrNull() ?: 0.0,
-        maxDistKm = binding.etMaxDistance.text?.toString()?.toDoubleOrNull() ?: 5.0,
-        numRays = binding.etNumRays.text?.toString()?.toIntOrNull() ?: 72,
-        samplesPerRay = binding.etSampleSteps.text?.toString()?.toIntOrNull() ?: 80,
-        useDemoTerrain = binding.switchDemoTerrain.isChecked,
-        useCurvature = binding.switchCurvature.isChecked,
-        refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13,
-        parallelRays = binding.switchParallel.isChecked,
-        adaptiveSampling = binding.switchAdaptive.isChecked,
-        binarySearchHorizon = binding.switchBinaryHorizon.isChecked,
-        quality = selectedQuality()
-    ).sanitized()
+    private fun readParams(): ViewshedParams {
+        val raw = ViewshedParams(
+            eyeHeightM = currentViewerHeightM(),
+            targetHeightM = binding.etTargetHeight.text?.toString()?.toDoubleOrNull() ?: 0.0,
+            maxDistKm = binding.etMaxDistance.text?.toString()?.toDoubleOrNull() ?: 5.0,
+            numRays = binding.etNumRays.text?.toString()?.toIntOrNull() ?: 72,
+            samplesPerRay = binding.etSampleSteps.text?.toString()?.toIntOrNull() ?: 80,
+            useDemoTerrain = binding.switchDemoTerrain.isChecked,
+            useCurvature = binding.switchCurvature.isChecked,
+            refraction = binding.etRefraction.text?.toString()?.toDoubleOrNull() ?: 0.13,
+            parallelRays = binding.switchParallel.isChecked,
+            adaptiveSampling = false,
+            binarySearchHorizon = false,
+            quality = selectedQuality(),
+        ).sanitized()
+        if (!binding.switchAdaptiveQuality.isChecked) {
+            updateComputeHealth(adaptiveCompute.snapshot())
+            return raw
+        }
+        val decision = adaptiveCompute.adapt(raw)
+        updateComputeHealth(decision.health, decision.reason)
+        return decision.params
+    }
 
     private fun setupCloudBackend() {
         val prefs = getSharedPreferences("viewshed_prefs", MODE_PRIVATE)
@@ -780,12 +1213,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.etBackendUrl.setText(
             if (!saved.isNullOrBlank()) saved else defaultUrl,
         )
-        // Default ON so Oracle host is used out of the box; user can disable.
-        binding.switchCloudBackend.isChecked = prefs.getBoolean("use_cloud_backend", true)
+        // Local/on-device analysis is the reliable default. Cloud remains opt-in.
+        binding.switchCloudBackend.isChecked = prefs.getBoolean("use_cloud_backend", false)
         if (!prefs.contains("backend_url")) {
             prefs.edit()
                 .putString("backend_url", defaultUrl)
-                .putBoolean("use_cloud_backend", true)
+                .putBoolean("use_cloud_backend", false)
                 .apply()
         }
         binding.btnTestBackend.setOnClickListener {
@@ -816,6 +1249,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
             }
         }
+        binding.btnCollaboration.setOnClickListener {
+            startActivity(Intent(this, CollaborationActivity::class.java))
+        }
         binding.switchCloudBackend.setOnCheckedChangeListener { _, checked ->
             prefs.edit().putBoolean("use_cloud_backend", checked).apply()
             binding.etBackendUrl.text?.toString()?.let {
@@ -833,6 +1269,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             toast("Map not ready yet.")
             return
         }
+        val version = ++calculationVersion
         calcJob?.cancel()
         calcJob = lifecycleScope.launch {
             try {
@@ -845,11 +1282,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     BackendViewshedClient.normalizeUrl(
                         binding.etBackendUrl.text?.toString().orEmpty(),
                     )
+                var completedWithCloud = useCloud
+                var cloudFallbackNotified = false
 
                 // Always redraw this run's polygons (avoid stacking duplicates)
                 polygons.forEach { it.remove() }
                 polygons.clear()
                 results.clear()
+
+                if (binding.switchBackgroundProcessing.isChecked) {
+                    queueBackgroundCalculations(targets, params)
+                    toast("${targets.size} durable analysis job(s) queued")
+                    return@launch
+                }
 
                 val newResults = mutableListOf<ViewshedResult>()
                 targets.forEachIndexed { index, observer ->
@@ -858,48 +1303,34 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                     val t0 = android.os.SystemClock.elapsedRealtime()
                     val result =
-                        if (useCloud && backendUrl.length >= 10) {
+                        if (completedWithCloud && useCloud && backendUrl.length >= 10) {
                             binding.tvProgress.text = "Cloud backend…"
                             binding.progressBar.isIndeterminate = true
                             try {
                                 BackendViewshedClient(backendUrl).compute(observer, params)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                Log.w(TAG, "Cloud calculation failed; using on-device engine", error)
+                                completedWithCloud = false
+                                binding.switchCloudBackend.isChecked = false
+                                if (!cloudFallbackNotified) {
+                                    toast("Cloud unavailable — continuing on device.")
+                                    cloudFallbackNotified = true
+                                }
+                                computeOnDevice(observer, params)
                             } finally {
                                 binding.progressBar.isIndeterminate = false
                             }
                         } else {
-                            val samples = ViewshedEngine.samplePoints(observer, params)
-                            val elev = withContext(Dispatchers.IO) {
-                                elevationRepo.resolveElevations(
-                                    points = samples,
-                                    useDemo = params.useDemoTerrain,
-                                    offline = offlineCache,
-                                    offlineOnly = binding.switchOfflineOnly.isChecked,
-                                    source = selectedElevSource()
-                                )
-                            }
-                            ViewshedEngine.compute(
-                                observer = observer,
-                                params = params,
-                                elevations = elev,
-                                onRayProgress = { done, total ->
-                                    withContext(Dispatchers.Main.immediate) {
-                                        val pct = (100.0 * done / total).toInt()
-                                        binding.progressBar.progress = pct
-                                        binding.tvProgress.text = getString(
-                                            R.string.progress_format,
-                                            done,
-                                            total,
-                                            pct
-                                        )
-                                    }
-                                }
-                            )
+                            completedWithCloud = false
+                            computeOnDevice(observer, params)
                         }
                     PerformanceMonitor.record(
                         "viewshed",
                         android.os.SystemClock.elapsedRealtime() - t0,
                         rayCount = params.numRays,
-                        sampleCount = result.rangesM.size
+                        sampleCount = result.stats.totalCells,
                     )
                     newResults.add(result)
                     if (::map.isInitialized) drawResult(result, index)
@@ -907,7 +1338,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                 results.addAll(newResults)
                 showStats(results)
-                setExportEnabled(results.any { it.boundary.size >= 3 })
+                setExportEnabled(
+                    results.any { it.visibleSectors.isNotEmpty() || it.boundary.size >= 3 },
+                )
                 binding.tvPerf.text = "Perf: ${PerformanceMonitor.summary()}"
                 newResults.lastOrNull()?.let { last ->
                     try {
@@ -922,34 +1355,147 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     }
                 }
                 val mode = when {
+                    completedWithCloud -> "cloud"
                     params.useDemoTerrain -> "demo"
                     binding.switchOfflineOnly.isChecked -> "offline pack"
                     else -> selectedElevSource().name
                 }
                 toast("Viewshed ready — ${results.size} observer(s) · $mode")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "Calculation error", e)
                 toast("Error: ${e.message ?: e.javaClass.simpleName}")
             } finally {
-                setCalculating(false)
+                if (version == calculationVersion) {
+                    setCalculating(false)
+                    calcJob = null
+                }
             }
         }
     }
 
+    private suspend fun computeOnDevice(
+        observer: GeoPoint,
+        params: ViewshedParams,
+    ): ViewshedResult {
+        val samples = ViewshedEngine.samplePoints(observer, params)
+        val elevations = resolveOnDeviceElevations(samples, params)
+        return ViewshedEngine.compute(
+            observer = observer,
+            params = params,
+            elevations = elevations,
+            onRayProgress = { done, total ->
+                withContext(Dispatchers.Main.immediate) {
+                    val pct = if (total > 0) (100.0 * done / total).toInt() else 0
+                    binding.progressBar.progress = pct
+                    binding.tvProgress.text =
+                        getString(R.string.progress_format, done, total, pct)
+                }
+            },
+        )
+    }
+
+    private suspend fun queueBackgroundCalculations(
+        targets: List<GeoPoint>,
+        params: ViewshedParams,
+    ) {
+        val manager = WorkManager.getInstance(this)
+        targets.forEachIndexed { index, observer ->
+            binding.tvProgress.visibility = View.VISIBLE
+            binding.progressBar.isIndeterminate = true
+            binding.tvProgress.text = "Preparing background job ${index + 1}/${targets.size}…"
+            val points = ViewshedEngine.samplePoints(observer, params)
+            val elevations = resolveOnDeviceElevations(points, params)
+            val request = ViewshedComputeWorker.prepare(this, observer, params, points, elevations)
+            manager.enqueue(request)
+        }
+        binding.progressBar.isIndeterminate = false
+        binding.tvProgress.text = "Background analysis queued · safe to leave this screen"
+    }
+
+    private fun handleBackgroundWork(work: WorkInfo) {
+        when (work.state) {
+            WorkInfo.State.RUNNING -> {
+                val progress = work.progress.getInt(ViewshedComputeWorker.KEY_PROGRESS, 0)
+                binding.tvProgress.visibility = View.VISIBLE
+                binding.progressBar.isIndeterminate = false
+                binding.progressBar.progress = progress
+                binding.tvProgress.text = "Background terrain analysis · $progress%"
+            }
+            WorkInfo.State.SUCCEEDED -> {
+                val preferences = getSharedPreferences("background_viewsheds", MODE_PRIVATE)
+                val handled = preferences.getStringSet("handled", emptySet()).orEmpty()
+                if (work.id.toString() in handled) return
+                val result = ViewshedComputeWorker.readResult(this, work.outputData) ?: return
+                preferences.edit().putStringSet("handled", handled + work.id.toString()).apply()
+                if (::map.isInitialized) displayBackgroundResult(result)
+                else pendingBackgroundResults += result
+            }
+            WorkInfo.State.FAILED -> {
+                val error = work.outputData.getString(ViewshedComputeWorker.KEY_ERROR).orEmpty()
+                binding.tvProgress.text = "Background analysis failed${if (error.isBlank()) "" else ": $error"}"
+            }
+            else -> Unit
+        }
+    }
+
+    private fun displayBackgroundResult(result: ViewshedResult) {
+        results += result
+        drawResult(result, results.lastIndex)
+        showStats(results)
+        setExportEnabled(true)
+        binding.tvProgress.visibility = View.GONE
+        binding.tvPerf.text = "Perf: background worker · ${result.stats.visibleCells}/${result.stats.totalCells} visible cells"
+        toast("Background viewshed ready")
+    }
+
+    private fun updateComputeHealth(health: ComputeHealth, adjustment: String = "") {
+        if (!::binding.isInitialized) return
+        val battery = if (health.batteryPercent >= 0) "${health.batteryPercent}%" else "unknown"
+        val suffix = if (adjustment.isBlank()) "" else " · capped for $adjustment"
+        binding.tvComputeStatus.text =
+            "Compute: ${health.processors} cores · ${health.memoryClassMb} MB · thermal ${health.thermal.label} · battery $battery$suffix"
+    }
+
+    private suspend fun resolveOnDeviceElevations(
+        points: List<GeoPoint>,
+        params: ViewshedParams,
+    ): ElevationGrid {
+        val offlineOnly = binding.switchOfflineOnly.isChecked
+        val source = selectedElevSource()
+        return withContext(Dispatchers.IO) {
+            elevationRepo.resolveElevations(
+                points = points,
+                useDemo = params.useDemoTerrain,
+                offline = offlineCache,
+                offlineOnly = offlineOnly,
+                source = source,
+            )
+        }
+    }
+
     private fun drawResult(result: ViewshedResult, colorIndex: Int) {
-        if (result.boundary.size < 3) return
+        val visibleBoundaries =
+            result.visibleSectors.map { it.boundary }
+                .ifEmpty { listOf(result.boundary) }
+                .filter { it.size >= 3 }
+        if (visibleBoundaries.isEmpty()) return
         try {
             val fill = FILL_COLORS[colorIndex % FILL_COLORS.size]
             val stroke = STROKE_COLORS[colorIndex % STROKE_COLORS.size]
-            val poly = map.addPolygon(
-                PolygonOptions()
-                    .addAll(result.boundary.map { LatLng(it.lat, it.lon) })
-                    .fillColor(fill)
-                    .strokeColor(stroke)
-                    .strokeWidth(3f)
-                    .geodesic(true)
-            )
-            polygons.add(poly)
+            visibleBoundaries.forEach { boundary ->
+                polygons.add(
+                    map.addPolygon(
+                        PolygonOptions()
+                            .addAll(boundary.map { LatLng(it.lat, it.lon) })
+                            .fillColor(fill)
+                            .strokeColor(stroke)
+                            .strokeWidth(1f)
+                            .geodesic(true),
+                    ),
+                )
+            }
         } catch (e: Exception) {
             Log.e(TAG, "drawResult", e)
         }
@@ -1012,9 +1558,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun clearAll() {
+        calculationVersion++
         calcJob?.cancel()
+        calcJob = null
         clearOverlaysOnly()
         clearAnalysisOverlays()
+        clearMeasurementOverlays()
         observers.clear()
         pathPoints.clear()
         pathMode = false
@@ -1039,11 +1588,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnExportKml.isEnabled = enabled
         binding.btnExportGpx.isEnabled = enabled
         binding.btnExportCsv.isEnabled = enabled
+        binding.btnExportMore.isEnabled = enabled
     }
 
     private fun clearAnalysisOverlays() {
         analysisOverlays.forEach { it.remove() }
         analysisOverlays.clear()
+        analysisLines.forEach { it.remove() }
+        analysisLines.clear()
+        analysisCircles.forEach { it.remove() }
+        analysisCircles.clear()
         analysisMarkers.forEach { it.remove() }
         analysisMarkers.clear()
     }
@@ -1058,24 +1612,27 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 setCalculating(true)
                 val params = readParams()
                 val pts = observers.toList()
-                val samples = pts + pts.flatMapIndexed { i, a ->
-                    pts.drop(i + 1).flatMap { b ->
-                        val bearing = com.viewshed.app.viewshed.GeoMath.bearingDeg(a, b)
-                        val dist = com.viewshed.app.viewshed.GeoMath.distanceM(a, b)
-                        (1 until 40).map { s ->
-                            com.viewshed.app.viewshed.GeoMath.destination(a, bearing, dist * s / 40.0)
+                val intervisibilitySamples = 60
+                val samples =
+                    pts.flatMapIndexed { index, from ->
+                        pts.drop(index + 1).flatMap { to ->
+                            ProfessionalAnalysis.intervisibilitySamplePoints(
+                                from,
+                                to,
+                                intervisibilitySamples,
+                            )
                         }
                     }
-                }
-                val elev = withContext(Dispatchers.IO) {
-                    elevationRepo.resolveElevations(
-                        samples, params.useDemoTerrain, offlineCache,
-                        binding.switchOfflineOnly.isChecked, selectedElevSource()
-                    )
-                }
+                        .distinctBy { it.key() }
+                val elev = resolveOnDeviceElevations(samples, params)
                 val matrix = withContext(Dispatchers.Default) {
                     ProfessionalAnalysis.multiObserverMatrix(
-                        pts, elev, params.eyeHeightM, 60, params.useCurvature, params.refraction
+                        pts,
+                        elev,
+                        params.eyeHeightM,
+                        intervisibilitySamples,
+                        params.useCurvature,
+                        params.refraction,
                     )
                 }
                 clearAnalysisOverlays()
@@ -1083,14 +1640,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     for (i in pts.indices) {
                         for (j in i + 1 until pts.size) {
                             val visible = matrix[i][j]
-                            val poly = map.addPolygon(
-                                PolygonOptions()
-                                    .add(LatLng(pts[i].lat, pts[i].lon), LatLng(pts[j].lat, pts[j].lon), LatLng(pts[i].lat, pts[i].lon))
-                                    .strokeColor(if (visible) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
-                                    .strokeWidth(5f)
-                                    .fillColor(0x00000000)
+                            val line = map.addPolyline(
+                                PolylineOptions()
+                                    .add(LatLng(pts[i].lat, pts[i].lon), LatLng(pts[j].lat, pts[j].lon))
+                                    .color(if (visible) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
+                                    .width(5f)
                             )
-                            analysisOverlays.add(poly)
+                            analysisLines.add(line)
                         }
                     }
                 }
@@ -1134,20 +1690,31 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun drawFrequencyCells(cells: List<ProfessionalAnalysis.FrequencyCell>, maxCount: Int) {
         if (!::map.isInitialized || cells.isEmpty()) return
-        // Subsample markers for performance
-        val step = maxOf(1, cells.size / 200)
+        val step = maxOf(1, cells.size / 320)
+        val radiusM =
+            (results.maxOfOrNull { it.params.maxDistKm * 1000.0 } ?: 1000.0)
+                .div(26.0)
+                .coerceIn(20.0, 500.0)
         cells.forEachIndexed { idx, cell ->
             if (idx % step != 0) return@forEachIndexed
             val t = if (maxCount > 0) cell.count.toFloat() / maxCount else 0f
-            val hue = 200f - t * 160f // blue → red intensity
-            val m = map.addMarker(
-                MarkerOptions()
-                    .position(LatLng(cell.point.lat, cell.point.lon))
-                    .title("Seen by ${cell.count}")
-                    .icon(BitmapDescriptorFactory.defaultMarker(hue))
-                    .alpha(0.75f)
+            val fill =
+                Color.argb(
+                    112,
+                    (48 + 207 * t).roundToInt(),
+                    (110 - 54 * t).roundToInt(),
+                    (220 - 180 * t).roundToInt(),
+                )
+            analysisCircles.add(
+                map.addCircle(
+                    CircleOptions()
+                        .center(LatLng(cell.point.lat, cell.point.lon))
+                        .radius(radiusM)
+                        .fillColor(fill)
+                        .strokeColor(Color.TRANSPARENT)
+                        .strokeWidth(0f),
+                ),
             )
-            m?.let { analysisMarkers.add(it) }
         }
     }
 
@@ -1162,12 +1729,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 setCalculating(true)
                 val params = readParams()
                 val samples = ViewshedEngine.samplePoints(observer, params)
-                val elev = withContext(Dispatchers.IO) {
-                    elevationRepo.resolveElevations(
-                        samples, params.useDemoTerrain, offlineCache,
-                        binding.switchOfflineOnly.isChecked, selectedElevSource()
-                    )
-                }
+                val elev = resolveOnDeviceElevations(samples, params)
                 val shadow = withContext(Dispatchers.Default) {
                     ProfessionalAnalysis.shadowAnalysis(observer, elev, params)
                 }
@@ -1203,6 +1765,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun togglePathMode() {
         pathMode = !pathMode
         if (pathMode) {
+            clearAnalysisOverlays()
             pathPoints.clear()
             toast("Path LOS: tap path points, tap Path LOS again to run")
             binding.tvProStatus.text = "Path mode ON — tap map to add vertices"
@@ -1211,6 +1774,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             if (pathPoints.size < 2) {
                 toast("Need 2+ path points")
                 binding.btnPathVis.text = getString(R.string.btn_path_vis)
+                pathPoints.clear()
+                clearAnalysisOverlays()
                 return
             }
             runPathVisibility()
@@ -1243,19 +1808,39 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             try {
                 setCalculating(true)
                 val params = readParams()
-                val samples = path + ViewshedEngine.samplePoints(observer, params).take(200)
-                val elev = withContext(Dispatchers.IO) {
-                    elevationRepo.resolveElevations(
-                        samples, params.useDemoTerrain, offlineCache,
-                        binding.switchOfflineOnly.isChecked, selectedElevSource()
+                val samplesPerSegment = 24
+                val samples =
+                    ProfessionalAnalysis.pathVisibilitySamplePoints(
+                        observer,
+                        path,
+                        samplesPerSegment,
                     )
-                }
+                val elev = resolveOnDeviceElevations(samples, params)
                 val res = withContext(Dispatchers.Default) {
                     ProfessionalAnalysis.pathVisibility(
                         observer, path, elev,
                         params.eyeHeightM, params.targetHeightM,
-                        24, params.useCurvature, params.refraction
+                        samplesPerSegment, params.useCurvature, params.refraction
                     )
+                }
+                if (::map.isInitialized) {
+                    for (index in 0 until path.lastIndex) {
+                        val visible = res.segmentVisible.getOrElse(index) { false }
+                        analysisLines.add(
+                            map.addPolyline(
+                                PolylineOptions()
+                                    .add(
+                                        LatLng(path[index].lat, path[index].lon),
+                                        LatLng(path[index + 1].lat, path[index + 1].lon),
+                                    )
+                                    .color(
+                                        if (visible) 0xFF4CAF50.toInt()
+                                        else 0xFFF44336.toInt(),
+                                    )
+                                    .width(7f),
+                            ),
+                        )
+                    }
                 }
                 val msg = "Path LOS ${"%.0f".format(res.visibleFraction * 100)}% visible · " +
                     "${"%.0f".format(res.visibleLengthM)} / ${"%.0f".format(res.totalLengthM)} m"
@@ -1388,6 +1973,88 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             .show()
     }
 
+    private fun showMoreExports() {
+        if (results.isEmpty()) {
+            toast("Nothing to export.")
+            return
+        }
+        val labels = arrayOf(
+            "Shapefile package (.zip)",
+            "Google Earth KMZ",
+            "Current map image (PNG)",
+            "Portable analysis QR",
+            "Complete GIS bundle (.zip)",
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("More exports")
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> buildBinaryExport("Viewshed-shapefile.zip", "application/zip") {
+                        AdvancedExport.toShapefileZip(results)
+                    }
+                    1 -> buildBinaryExport("Viewshed.kmz", "application/vnd.google-earth.kmz") {
+                        AdvancedExport.toKmz(results)
+                    }
+                    2 -> exportMapSnapshot()
+                    3 -> buildBinaryExport("Viewshed-QR.png", "image/png") {
+                        ByteArrayOutputStream().use { output ->
+                            QrExport.bitmap(QrExport.payload(results.first())).compress(Bitmap.CompressFormat.PNG, 100, output)
+                            output.toByteArray()
+                        }
+                    }
+                    4 -> buildBinaryExport("Viewshed-analysis.zip", "application/zip") {
+                        AdvancedExport.toAnalysisBundle(results, binding.switchMultiObserver.isChecked)
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun buildBinaryExport(title: String, mime: String, builder: () -> ByteArray) {
+        lifecycleScope.launch {
+            try {
+                val bytes = withContext(Dispatchers.Default) { builder() }
+                shareBytes(bytes, mime, title)
+            } catch (error: Exception) {
+                Log.e(TAG, "Export failed", error)
+                toast("Export failed: ${error.message}")
+            }
+        }
+    }
+
+    private fun exportMapSnapshot() {
+        if (!::map.isInitialized) return
+        map.snapshot { bitmap ->
+            if (bitmap == null) {
+                toast("Map snapshot unavailable.")
+                return@snapshot
+            }
+            lifecycleScope.launch(Dispatchers.Default) {
+                val bytes = ByteArrayOutputStream().use { output ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                    output.toByteArray()
+                }
+                withContext(Dispatchers.Main) { shareBytes(bytes, "image/png", "Viewshed-map.png") }
+            }
+        }
+    }
+
+    private fun shareBytes(bytes: ByteArray, mime: String, title: String) {
+        val directory = File(cacheDir, "shared").apply { mkdirs() }
+        val safeName = title.replace(Regex("[^A-Za-z0-9._-]"), "-")
+        val file = File(directory, safeName)
+        file.writeBytes(bytes)
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(share, "Share $title"))
+    }
+
     private fun shareText(body: String, mime: String, title: String) {
         if (results.isEmpty()) {
             toast("Nothing to export.")
@@ -1433,6 +2100,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val center = activeFieldPoint()
         val radiusKm = binding.etMaxDistance.text?.toString()?.toDoubleOrNull()?.coerceIn(0.5, 15.0)
             ?: 3.0
+        val useDemoTerrain = binding.switchDemoTerrain.isChecked
+        val elevationSource = selectedElevSource()
         binding.btnCacheOffline.isEnabled = false
         lifecycleScope.launch {
             try {
@@ -1442,14 +2111,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         name = "Area ${String.format(Locale.US, "%.3f,%.3f", center.lat, center.lon)}",
                         center = center,
                         radiusKm = radiusKm,
-                        gridSteps = 20
+                        gridSteps = 40,
                     ) { points ->
-                        // Force network sample (not demo) when possible; falls back inside repo
                         elevationRepo.resolveElevations(
                             points = points,
-                            useDemo = binding.switchDemoTerrain.isChecked,
+                            useDemo = useDemoTerrain,
                             offline = null,
-                            offlineOnly = false
+                            offlineOnly = false,
+                            source = elevationSource,
                         ).let { grid ->
                             points.associate { p -> p.key() to grid.elevation(p) }
                         }
@@ -1672,9 +2341,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun handleMeasureTap(point: GeoPoint) {
         val a = measureA
         if (a == null) {
+            clearMeasurementOverlays()
             measureA = point
-            measureLineMarker?.remove()
-            measureLineMarker = if (::map.isInitialized) {
+            val marker = if (::map.isInitialized) {
                 map.addMarker(
                     MarkerOptions()
                         .position(LatLng(point.lat, point.lon))
@@ -1682,6 +2351,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_CYAN))
                 )
             } else null
+            marker?.let { measureMarkers.add(it) }
             binding.tvMeasureResult.text = "Point A set — tap point B"
         } else {
             val dist = MeasurementTool.calculateDistanceM(a, point)
@@ -1696,11 +2366,27 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         .position(LatLng(point.lat, point.lon))
                         .title("B · ${MeasurementTool.formatDistance(dist)}")
                         .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_CYAN))
-                )
+                )?.let { measureMarkers.add(it) }
+                measureLine =
+                    map.addPolyline(
+                        PolylineOptions()
+                            .add(LatLng(a.lat, a.lon), LatLng(point.lat, point.lon))
+                            .color(0xFF00BCD4.toInt())
+                            .width(6f)
+                            .geodesic(true),
+                    )
             }
             toast(MeasurementTool.formatDistance(dist))
             measureA = null
         }
+    }
+
+    private fun clearMeasurementOverlays() {
+        measureA = null
+        measureMarkers.forEach { it.remove() }
+        measureMarkers.clear()
+        measureLine?.remove()
+        measureLine = null
     }
 
     companion object {

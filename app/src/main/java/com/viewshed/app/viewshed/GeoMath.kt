@@ -114,6 +114,19 @@ object GeoMath {
 
     fun polygonAreaKm2(ring: List<GeoPoint>): Double = polygonAreaM2(ring) / 1_000_000.0
 
+    /** Surface area of a spherical annular sector. */
+    fun annularSectorAreaM2(
+        innerDistanceM: Double,
+        outerDistanceM: Double,
+        bearingWidthDeg: Double,
+    ): Double {
+        val inner = innerDistanceM.coerceAtLeast(0.0)
+        val outer = outerDistanceM.coerceAtLeast(inner)
+        val widthRad = abs(degToRad(bearingWidthDeg))
+        return widthRad * EARTH_RADIUS_M * EARTH_RADIUS_M *
+            (cos(inner / EARTH_RADIUS_M) - cos(outer / EARTH_RADIUS_M))
+    }
+
     fun clampBearing(deg: Double): Double {
         var b = deg % 360.0
         if (b < 0) b += 360.0

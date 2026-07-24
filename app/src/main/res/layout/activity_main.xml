@@ -71,13 +71,20 @@
                     app:iconTint="?attr/colorOnSurface" />
             </LinearLayout>
 
-            <com.google.android.material.chip.ChipGroup
-                android:id="@+id/chipMapType"
+            <HorizontalScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                app:selectionRequired="true"
-                app:singleSelection="true">
+                android:fillViewport="false"
+                android:scrollbars="none">
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chipMapType"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:selectionRequired="true"
+                    app:singleLine="true"
+                    app:singleSelection="true">
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/chipHybrid"
@@ -107,7 +114,8 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/map_normal" />
-            </com.google.android.material.chip.ChipGroup>
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
@@ -115,7 +123,7 @@
     <LinearLayout
         android:id="@+id/fabColumn"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_height="match_parent"
         android:layout_gravity="end|bottom"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="220dp"
@@ -164,7 +172,9 @@
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="10dp"
             android:layout_marginBottom="6dp"
-            android:background="#66FFFFFF" />
+            android:contentDescription="@string/expand_controls"
+            android:focusable="true"
+            android:background="?attr/colorOutline" />
 
         <TextView
             android:id="@+id/tvHint"
@@ -300,10 +310,10 @@
         <androidx.core.widget.NestedScrollView
             android:id="@+id/sheetScroll"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="0dp"
+            android:layout_weight="1"
             android:clipToPadding="false"
-            android:fillViewport="false"
-            android:maxHeight="420dp"
+            android:fillViewport="true"
             android:overScrollMode="ifContentScrolls">
 
             <LinearLayout
@@ -314,7 +324,7 @@
                 android:paddingHorizontal="12dp"
                 android:paddingBottom="24dp">
 
-                <!-- Integer cm steps avoid Material float stepSize bugs -->
+                <!-- Integer tenths of a metre avoid float step-size drift. -->
                 <com.google.android.material.slider.Slider
                     android:id="@+id/sliderViewerHeight"
                     android:layout_width="match_parent"
@@ -527,6 +537,28 @@
                 </com.google.android.material.chip.ChipGroup>
 
                 <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchAdaptiveQuality"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="@string/adaptive_quality" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchBackgroundProcessing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="false"
+                    android:text="@string/background_processing" />
+
+                <TextView
+                    android:id="@+id/tvComputeStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingBottom="4dp"
+                    android:text="@string/compute_status_starting"
+                    android:textAppearance="?attr/textAppearanceBodySmall" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchDemoTerrain"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -560,26 +592,19 @@
                     android:layout_height="wrap_content"
                     android:text="@string/btn_test_backend" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCollaboration"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/btn_collaboration" />
+
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchCurvature"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:checked="true"
                     android:text="@string/include_curvature" />
-
-                <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/switchAdaptive"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:checked="false"
-                    android:text="@string/adaptive_sampling" />
-
-                <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/switchBinaryHorizon"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:checked="false"
-                    android:text="@string/binary_horizon" />
 
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchParallel"
@@ -720,6 +745,30 @@
                         android:text="@string/btn_demo_dem" />
                 </LinearLayout>
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnTerrainLab"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:text="@string/btn_terrain_lab" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnManageDem"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:text="@string/btn_manage_dem" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRemoteLayers"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:text="@string/btn_remote_layers" />
+
                 <HorizontalScrollView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -845,6 +894,20 @@
                     android:paddingBottom="4dp"
                     android:text="@string/field_tools"
                     android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFieldProjects"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/btn_field_projects" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnTerrainAr"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/btn_terrain_ar" />
 
                 <TextView
                     android:id="@+id/tvOfflineStatus"
@@ -1000,6 +1063,14 @@
                         android:enabled="false"
                         android:text="@string/export_csv" />
                 </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnExportMore"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:enabled="false"
+                    android:text="@string/export_more" />
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
     </LinearLayout>

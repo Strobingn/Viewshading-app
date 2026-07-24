@@ -11,4 +11,5 @@ services:
       - ./uploads:/app/uploads
     environment:
       - PYTHONUNBUFFERED=1
+      - VIEWSHADE_UPLOAD_DIR=/app/uploads
     restart: unless-stopped
